@@ -1,43 +1,60 @@
+// server.cpp - Dedicated game server for playing over a LAN with the native build.
+//
+// It runs the shared World (src/world.cpp) and talks to every client over TCP port 9000,
+// one line of text per message:
+//   client -> server: "x y" (my position) or "B x y vx vy" (I fired)
+//   server -> client: "ID n" (your player id), then 60 times a second "W ..." (the whole world)
+//
+// (The web version doesn't need this: there, one of the players' browsers runs the World.)
+//
+// Copyright (C) 2026 Kevin Bell. SPDX-License-Identifier: GPL-3.0-or-later
 #include <arpa/inet.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <iostream>
-#include <poll.h>
-#include <string>
-#include <vector>
+
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <cstdio>
-#include <cstdlib>
-#include <ctime>
+#include <iostream>
+#include <string>
+#include <vector>
 
-const int W = 800, H = 600;
+#include "world.h"
 
-struct Rect
+struct Client
 {
-    float x, y, w, h;
-};
-struct Bullet
-{
-    Rect rect;
-    float vx, vy;
-};
-struct Player
-{
-    Rect rect;
-    std::string pending;
+    int fd;
+    int id;
+    std::string pending; // what they sent that isn't a whole line yet
+    std::string outbox;  // what we still have to send them
 };
 
-bool checkCollision(const Rect &a, const Rect &b)
+double wallClockMs()
 {
-    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    using namespace std::chrono;
+    return (double)duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-// Adds a number to a message, rounded to a whole pixel
-void add(std::string &msg, float value)
+// Sends as much of the outbox as the connection takes right now. Never waits.
+void flush(Client &c)
 {
-    msg += " " + std::to_string((int)value);
+    while (!c.outbox.empty())
+    {
+        ssize_t n = send(c.fd, c.outbox.data(), c.outbox.size(), MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (n <= 0)
+            return;
+        c.outbox.erase(0, (size_t)n);
+    }
+}
+
+void queueLine(Client &c, const std::string &line)
+{
+    if (c.outbox.size() > 64 * 1024)
+        return; // they're not keeping up; skip a frame rather than cut a line in half
+    c.outbox += line;
+    c.outbox += '\n';
+    flush(c);
 }
 
 int main()
@@ -60,228 +77,83 @@ int main()
     listen(server, 8);
     std::cout << "Server listening on port 9000" << std::endl;
     std::vector<pollfd> fds = {{server, POLLIN, 0}};
-    std::vector<int> ids = {0};
-
-    std::vector<Player> players(1); // players[i] goes with fds[i] and ids[i]
+    std::vector<Client> clients; // clients[i] goes with fds[i + 1]
 
     // The game world, shared by everyone
-    std::srand(std::time(nullptr));
-    std::vector<Rect> coins, enemies;
-    std::vector<Bullet> bullets;
-    int score = 0;
-    for (int i = 0; i < 5; i++)
-    {
-        coins.push_back({(float)(std::rand() % (W - 20)), (float)(std::rand() % (H - 20)), 15, 15});
-    }
+    World world(wallClockMs());
     auto lastTick = std::chrono::steady_clock::now();
 
     while (true)
     {
         poll(fds.data(), fds.size(), 5);
-        if (fds[0].revents)
+        if (fds[0].revents & POLLIN)
         {
-            int client = accept(server, nullptr, nullptr);
-            if (client >= 0)
+            int fd = accept(server, nullptr, nullptr);
+            if (fd >= 0)
             {
-                int id = 1;
-                while (std::find(ids.begin(), ids.end(), id) != ids.end())
-                    id++;
-                fds.push_back({client, POLLIN, 0});
-                ids.push_back(id);
-                players.push_back({{-1000, -1000, 40, 40}, ""});
-                std::string hello = "ID " + std::to_string(id) + "\n";
-                send(client, hello.c_str(), hello.size(), MSG_NOSIGNAL);
-                std::cout << "Player " << id << " joined (" << fds.size() - 1 << " online)" << std::endl;
+                int id = world.addPlayer();
+                if (id == 0)
+                {
+                    send(fd, "FULL\n", 5, MSG_NOSIGNAL);
+                    close(fd);
+                }
+                else
+                {
+                    fds.push_back({fd, POLLIN, 0});
+                    clients.push_back({fd, id, "", ""});
+                    queueLine(clients.back(), "ID " + std::to_string(id));
+                    std::cout << "Player " << id << " joined (" << clients.size() << " online)" << std::endl;
+                }
             }
         }
 
-        for (size_t i = 1; i < fds.size(); i++)
+        for (size_t i = 0; i < clients.size(); i++)
         {
-            if (!fds[i].revents)
-            {
+            if (!fds[i + 1].revents)
                 continue;
-            }
 
             char buf[512];
-            ssize_t n = read(fds[i].fd, buf, sizeof(buf));
+            ssize_t n = read(clients[i].fd, buf, sizeof(buf));
             if (n <= 0)
             {
-                close(fds[i].fd);
-                fds.erase(fds.begin() + i);
-                ids.erase(ids.begin() + i);
-                players.erase(players.begin() + i);
+                close(clients[i].fd);
+                world.removePlayer(clients[i].id);
+                std::cout << "Player " << clients[i].id << " left (" << clients.size() - 1 << " online)" << std::endl;
+                fds.erase(fds.begin() + (long)i + 1);
+                clients.erase(clients.begin() + (long)i);
                 i--;
-                std::cout << "Player left (" << fds.size() - 1 << " online)" << std::endl;
                 continue;
             }
 
             // Each line is "x y" (my position) or "B x y vx vy" (I fired)
-            std::string &pending = players[i].pending;
-            pending.append(buf, n);
+            std::string &pending = clients[i].pending;
+            pending.append(buf, (size_t)n);
             size_t end;
             while ((end = pending.find('\n')) != std::string::npos)
             {
-                /* code */
                 std::string line = pending.substr(0, end);
                 pending.erase(0, end + 1);
-                Bullet b{{0, 0, 8, 8}, 0, 0};
-                if (std::sscanf(line.c_str(), "B %f %f %f %f", &b.rect.x, &b.rect.y, &b.vx, &b.vy) == 4)
-                {
-                    /* code */
-                    bullets.push_back(b);
-                }
-                else
-                {
-                    /* code */
-                    std::sscanf(line.c_str(), "%f %f", &players[i].rect.x, &players[i].rect.y);
-                }
+                float x, y, vx, vy;
+                if (std::sscanf(line.c_str(), "B %f %f %f %f", &x, &y, &vx, &vy) == 4)
+                    world.addBullet(x, y, vx, vy);
+                else if (std::sscanf(line.c_str(), "%f %f", &x, &y) == 2)
+                    world.setPlayerPosition(clients[i].id, x, y);
             }
+            if (pending.size() > 4096)
+                pending.clear(); // nobody sends lines that long
         }
+
         // Run the world about 60 times a second
         auto now = std::chrono::steady_clock::now();
-        std::chrono::duration<float>(now - lastTick).count();
         float dt = std::chrono::duration<float>(now - lastTick).count();
-        if (dt < 1.0f / 60)
+        if (dt < TICK)
             continue;
         lastTick = now;
-
-        // Bullets fly, and dissappear off screen
-        for (auto it = bullets.begin(); it != bullets.end();)
-        {
-            it->rect.x += it->vx * dt;
-            it->rect.y += it->vy * dt;
-            if (it->rect.x < 0 || it->rect.x > W || it->rect.y < 0 || it->rect.y > H)
-                it = bullets.erase(it);
-            else
-                ++it;
-        }
-
-        // A bullet that touches an enemy removes both: +10 points
-        for (auto b = bullets.begin(); b != bullets.end();)
-        {
-            /* code */
-            auto e = enemies.begin();
-            while (e != enemies.end() && !checkCollision(b->rect, *e))
-                ++e;
-            if (e != enemies.end())
-            {
-                /* code */
-                enemies.erase(e);
-                b = bullets.erase(b);
-                score += 10;
-            }
-            else
-            {
-                /* code */
-                ++b;
-            }
-        }
-
-        // A player who touches a coin gets a point. Every 5 points brings an enemy.
-        for (size_t i = 1; i < players.size(); i++)
-        {
-            /* code */
-            for (auto &coin : coins)
-            {
-                /* code */
-                if (checkCollision(players[i].rect, coin))
-                {
-                    /* code */
-                    score++;
-                    coin.x = (float)(std::rand() % (W - 20));
-                    coin.y = (float)(std::rand() % (H - 20));
-                    if (score % 5 == 0)
-                    {
-                        /* code */
-                        enemies.push_back({(float)(std::rand() % W), (float)(std::rand() % H), 40, 40});
-                    }
-                }
-            }
-        }
-
-        // Enemies walk toward the nearest player who's alive
-        for (auto &enemy : enemies)
-        {
-            Rect *target = nullptr;
-            float best = 0;
-            for (size_t i = 1; i < players.size(); i++)
-            {
-                Rect &p = players[i].rect;
-                float d = std::hypot(p.x - enemy.x, p.y - enemy.y);
-                if (p.x >= 0 && (!target || d < best))
-                {
-                    target = &p;
-                    best = d;
-                }
-            }
-            if (target && best > 0)
-            {
-                /* code */
-                enemy.x += (target->x - enemy.x) / best * 80.0f * dt;
-                enemy.y += (target->y - enemy.y) / best * 80.0f * dt;
-            }
-        }
-
-        // If nobody is alive, start the world over
-        bool anyoneAlive = false;
-        for (size_t i = 1; i < players.size(); i++)
-        {
-            /* code */
-            if (players[i].rect.x >= 0)
-            {
-                /* code */
-                anyoneAlive = true;
-            }
-            if (!anyoneAlive)
-            {
-                /* code */
-                score = 0;
-                enemies.clear();
-                bullets.clear();
-            }
-        }
+        world.step(std::min(dt, 0.1f));
 
         // Send the whole world to everyone as one line
-        std::string msg = "W";
-        add(msg, score);
-
-        add(msg, players.size() - 1);
-        for (size_t i = 1; i < players.size(); i++)
-        {
-            /* code */
-            add(msg, ids[i]);
-            add(msg, players[i].rect.x);
-            add(msg, players[i].rect.y);
-        }
-
-        add(msg, coins.size());
-        for (auto &c : coins)
-        {
-            /* code */
-            add(msg, c.x);
-            add(msg, c.y);
-        }
-
-        add(msg, enemies.size());
-        for (auto &e : enemies)
-        {
-            /* code */
-            add(msg, e.x);
-            add(msg, e.y);
-        }
-
-        add(msg, bullets.size());
-        for (auto &b : bullets)
-        {
-            /* code */
-            add(msg, b.rect.x);
-            add(msg, b.rect.y);
-        }
-        msg += "\n";
-        for (size_t i = 1; i < fds.size(); i++)
-        {
-            /* code */
-            send(fds[i].fd, msg.c_str(), msg.size(), MSG_DONTWAIT | MSG_NOSIGNAL);
-        }
+        std::string msg = encodeSnapshot(world.snapshot(0));
+        for (auto &c : clients)
+            queueLine(c, msg);
     }
 }

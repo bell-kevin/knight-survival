@@ -25,7 +25,7 @@ inline void netSendPosition(int sock, float x, float y)
     if (sock < 0)
         return;
     char msg[64];
-    int len = std::snprintf(msg, sizeof(msg), "%1f %.1f\n", x, y);
+    int len = std::snprintf(msg, sizeof(msg), "%.1f %.1f\n", x, y);
     send(sock, msg, len, MSG_DONTWAIT | MSG_NOSIGNAL);
 }
 

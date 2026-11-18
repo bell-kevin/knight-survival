@@ -1,12 +1,11 @@
 {
     "version": "0.2.0",
     "configurations": [
-        
         {
-            "name": "GDB Debug (Container)",
+            "name": "Debug game (native)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/MyProject",
+            "program": "${workspaceFolder}/build/knight-survival",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
@@ -18,15 +17,22 @@
                     "description": "Enable pretty-printing for gdb",
                     "text": "-enable-pretty-printing",
                     "ignoreFailures": true
-                },
-                {
-                    "description": "Set disassembly flavor to Intel",
-                    "text": "-gdb-set disassembly-flavor intel",
-                    "ignoreFailures": true
                 }
             ],
-            "preLaunchTask": "CMake Build",
-            "miDebuggerPath": "/usr/bin/gdb"
+            "preLaunchTask": "CMake Build"
+        },
+        {
+            "name": "Debug LAN server (native)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/knight-server",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "gdb",
+            "preLaunchTask": "CMake Build"
         }
     ]
 }

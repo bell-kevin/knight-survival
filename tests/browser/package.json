@@ -1,0 +1,13 @@
+{
+  "name": "knight-survival-browser-tests",
+  "private": true,
+  "type": "module",
+  "description": "Browser tests for the web build of Knight Survival",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "test": "node lobby.mjs && node gameplay.mjs && node multiplayer.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.65.1"
+  }
+}

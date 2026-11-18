@@ -1,0 +1,267 @@
+<!doctype html>
+<!--
+  Knight Survival - the web page around the game. Emscripten puts the compiled C++ game where
+  the SCRIPT placeholder is at the bottom. Copyright (C) 2026 Kevin Bell.
+  SPDX-License-Identifier: GPL-3.0-or-later. Source: https://github.com/bell-kevin/knight-survival
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Knight Survival</title>
+<meta name="description" content="A free and open source multiplayer survival shooter written in C++. Play in your browser with friends: no sign-up, no download.">
+<meta property="og:title" content="Knight Survival">
+<meta property="og:description" content="Collect coins, shoot the red knights, survive together. Free multiplayer in your browser, no sign-up.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://bell-kevin.github.io/knight-survival/preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="favicon.png">
+<style>
+  :root {
+    --bg: #11151a;
+    --panel: #1a2028;
+    --raised: #232b35;
+    --text: #e9edf2;
+    --muted: #9aa6b3;
+    --border: #2e3843;
+    --accent: #f5c518;
+    --accent-ink: #1f1800;
+    --link: #8ec5ff;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #eef1f5;
+      --panel: #ffffff;
+      --raised: #f3f5f8;
+      --text: #1c232b;
+      --muted: #56616d;
+      --border: #d3dae2;
+      --accent: #f5c518;
+      --accent-ink: #1f1800;
+      --link: #0a5bb0;
+      color-scheme: light;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
+  }
+  a { color: var(--link); }
+  header, main, footer { width: min(960px, 100% - 32px); margin: 0 auto; }
+  header {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 14px 0;
+  }
+  header h1 { display: flex; align-items: center; gap: 10px; margin: 0; font-size: 1.35rem; letter-spacing: .02em; }
+  header h1 img { image-rendering: pixelated; }
+  #stage {
+    position: relative;
+    width: min(100%, (100vh - 150px) * 4 / 3);
+    width: min(100%, (100svh - 150px) * 4 / 3);
+    min-width: min(100%, 320px);
+    margin: 0 auto;
+    aspect-ratio: 4 / 3;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #fff;
+    box-shadow: 0 0 0 1px var(--border), 0 12px 32px rgb(0 0 0 / .25);
+  }
+  #canvas {
+    display: block; width: 100%; height: 100%;
+    image-rendering: pixelated;
+    touch-action: none;
+    outline: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .overlay {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    padding: 24px; text-align: center;
+    background: rgb(17 21 26 / .92);
+    color: #e9edf2;
+  }
+  .overlay[hidden] { display: none; }
+  .overlay h2 { margin: 0; font-size: clamp(1.15rem, 3.4vw, 1.8rem); line-height: 1.25; }
+  .overlay p { margin: 0; }
+  .sub { color: #aab4bf; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; align-items: center; }
+  button, input {
+    font: inherit; border-radius: 8px; border: 1px solid #3a4652;
+    padding: 9px 14px; min-height: 44px;
+  }
+  button { background: #26303b; color: #e9edf2; cursor: pointer; }
+  button:hover:not(:disabled) { background: #303c49; }
+  button:disabled { opacity: .6; cursor: progress; }
+  button.primary {
+    background: var(--accent); color: var(--accent-ink); border-color: transparent;
+    font-weight: 700; font-size: 1.15rem; padding: 12px 34px;
+  }
+  button.primary:hover:not(:disabled) { background: #ffd43b; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--link); outline-offset: 2px; }
+  #join-form { display: flex; gap: 8px; }
+  #join-form input { width: 9.5em; background: #0f1318; color: #e9edf2; }
+  .controls { font-size: .9rem; color: #aab4bf; }
+  kbd { font: inherit; padding: 0 5px; border: 1px solid #4a5663; border-radius: 4px; }
+  #bar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center;
+    margin: 12px auto 0; padding: 10px 12px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  }
+  #bar[hidden] { display: none; }
+  #bar button { background: var(--raised); color: var(--text); border-color: var(--border); min-height: 38px; padding: 6px 12px; }
+  #bar input {
+    flex: 1 1 220px; min-width: 0; min-height: 38px; padding: 6px 10px;
+    background: var(--raised); color: var(--muted); border-color: var(--border);
+  }
+  .info {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px;
+    margin: 28px 0;
+  }
+  .info section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .info h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  .info p { margin: 0; color: var(--muted); }
+  footer { padding: 8px 0 32px; color: var(--muted); font-size: .9rem; text-align: center; }
+  noscript { display: block; padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1><img src="favicon.png" alt="" width="32" height="32"> Knight Survival</h1>
+  <a href="https://github.com/bell-kevin/knight-survival">Source code</a>
+</header>
+
+<main>
+  <div id="stage">
+    <canvas id="canvas" width="800" height="600" tabindex="0" aria-label="Knight Survival game"></canvas>
+    <div id="lobby" class="overlay">
+      <h2>Collect coins. Shoot the red knights.<br>Survive together.</h2>
+      <p class="sub">Free multiplayer in your browser. No sign-up, no download.</p>
+      <button id="play" class="primary" disabled>Loading…</button>
+      <div class="row">
+        <button id="create" type="button">Create private room</button>
+        <form id="join-form">
+          <input id="room-input" placeholder="Room code" maxlength="32" autocomplete="off" spellcheck="false" aria-label="Room code">
+          <button type="submit">Join</button>
+        </form>
+      </div>
+      <p class="controls"><kbd>WASD</kbd> or arrows to move · click to shoot · on touch screens, drag your knight and tap to shoot</p>
+      <p id="status" class="sub" role="status"></p>
+    </div>
+    <noscript class="overlay">Knight Survival needs JavaScript and WebAssembly to run in your browser.</noscript>
+  </div>
+
+  <div id="bar" hidden>
+    <span>Room: <strong id="room-name"></strong></span>
+    <input id="invite" readonly aria-label="Invite link">
+    <button id="copy" type="button">Copy invite link</button>
+    <button id="leave" type="button">Change room</button>
+  </div>
+
+  <div class="info">
+    <section>
+      <h3>How to play</h3>
+      <p>Every yellow coin is a point for the whole team. Every 5 points another red knight shows up, and
+        shooting one is worth 10. Touch a red knight and you're out: press any key or tap to jump back in.
+        If everybody is out, the world starts over.</p>
+    </section>
+    <section>
+      <h3>How it works</h3>
+      <p>There is no game server and no account. The game is C++ compiled to WebAssembly. Your browser finds the
+        other players in your room through public <a href="https://nostr.com/">Nostr</a> relays, then talks to them
+        directly with WebRTC. One player's browser runs the world; if they leave, another player takes over and the
+        score carries on.</p>
+    </section>
+    <section>
+      <h3>Privacy and freedom</h3>
+      <p>No cookies, no analytics, nothing stored. Like any peer-to-peer game, the players in your room (and the relays
+        that introduce you) can see your IP address. The whole game is free software under the
+        <a href="LICENSE.txt">GNU GPL v3</a>: <a href="https://github.com/bell-kevin/knight-survival">read it, change it, share it</a>.</p>
+    </section>
+  </div>
+</main>
+
+<footer>Made by Kevin Bell · <a href="https://kevinbell.dev/">kevinBell.dev</a> · Built with SDL2, Emscripten and Trystero</footer>
+
+<script type="module" src="net.js"></script>
+<script>
+  const $ = id => document.getElementById(id)
+  const canvas = $('canvas')
+  const cleanRoom = text => (text || '').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 32)
+  const roomFromHash = () => cleanRoom(new URLSearchParams(location.hash.slice(1)).get('room'))
+  let runtimeReady = false
+  let started = false
+
+  // Emscripten reads this object to find the canvas and report progress.
+  var Module = {
+    canvas,
+    print: text => console.log(text),
+    printErr: text => console.warn(text),
+    setStatus: text => { if (!started && text) $('status').textContent = text },
+    onRuntimeInitialized: () => { runtimeReady = true; refresh() },
+    onAbort: what => { $('lobby').hidden = false; $('status').textContent = 'Sorry, the game stopped: ' + what },
+  }
+
+  function refresh() {
+    const ready = runtimeReady && !!window.KnightNet
+    const room = roomFromHash()
+    $('play').disabled = !ready
+    $('play').textContent = !ready ? 'Loading…' : room ? `Join room “${room}”` : 'Play now'
+    if (ready) $('status').textContent = room ? 'Someone shared this room with you.' : 'Play now puts you in the public lobby.'
+  }
+  window.addEventListener('knightnet-ready', refresh)
+  if (typeof WebAssembly !== 'object') $('status').textContent = 'Your browser does not support WebAssembly, which this game needs.'
+
+  function randomRoom() {
+    const letters = 'abcdefghjkmnpqrstuvwxyz23456789'
+    return Array.from(crypto.getRandomValues(new Uint8Array(6)), b => letters[b % letters.length]).join('')
+  }
+
+  function start(room) {
+    if (started || $('play').disabled) return
+    started = true
+    const base = location.origin + location.pathname
+    history.replaceState(null, '', room === 'lobby' ? location.pathname : '#room=' + room)
+    $('lobby').hidden = true
+    $('bar').hidden = false
+    $('room-name').textContent = room === 'lobby' ? 'public lobby' : room
+    $('invite').value = room === 'lobby' ? base : base + '#room=' + room
+    Module.callMain(['--room', room])
+    canvas.focus()
+  }
+
+  $('play').addEventListener('click', () => start(roomFromHash() || 'lobby'))
+  $('create').addEventListener('click', () => start(randomRoom()))
+  $('join-form').addEventListener('submit', event => {
+    event.preventDefault()
+    const room = cleanRoom($('room-input').value)
+    if (room) start(room)
+  })
+  $('copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText($('invite').value)
+      $('copy').textContent = 'Copied!'
+      setTimeout(() => ($('copy').textContent = 'Copy invite link'), 1500)
+    } catch {
+      $('invite').select()
+    }
+    canvas.focus()
+  })
+  $('invite').addEventListener('focus', () => $('invite').select())
+  $('leave').addEventListener('click', () => {
+    history.replaceState(null, '', location.pathname)
+    location.reload()
+  })
+  // Opening a different room link in this tab: start over in that room
+  window.addEventListener('hashchange', () => (started ? location.reload() : refresh()))
+  canvas.addEventListener('pointerdown', () => canvas.focus())
+  canvas.addEventListener('contextmenu', event => event.preventDefault())
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>
