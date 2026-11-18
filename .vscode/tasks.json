@@ -1,0 +1,20 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "CMake Build",
+            "type": "shell",
+            "command": "mkdir -p ${workspaceFolder}/build && cd ${workspaceFolder}/build && cmake .. -DCMAKE_BUILD_TYPE=Debug && make -j$(nproc)",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": ["$gcc"]
+        }
+    ]
+}
