@@ -16,6 +16,14 @@
 <meta property="og:image" content="https://bell-kevin.github.io/knight-survival/preview.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" type="image/png" href="favicon.png">
+<!-- Added to a phone's home screen, it opens as a full-screen app -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#11151a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Knights">
 <style>
   :root {
     --bg: #11151a;
@@ -47,6 +55,7 @@
   html { -webkit-text-size-adjust: 100%; }
   body {
     margin: 0;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left); /* clear of notches */
     background: var(--bg);
     color: var(--text);
     font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", sans-serif;
@@ -128,6 +137,58 @@
   .info p { margin: 0; color: var(--muted); }
   footer { padding: 8px 0 32px; color: var(--muted); font-size: .9rem; text-align: center; }
   noscript { display: block; padding: 24px; text-align: center; }
+  #play { max-width: 100%; white-space: normal; overflow-wrap: anywhere; } /* long room names wrap */
+  .touch-only { display: none; }
+  @media (pointer: coarse) {
+    .touch-only { display: inline; }
+    .mouse-only { display: none; }
+  }
+
+  /* Phones and small windows: no cramped game box under the lobby. The lobby is a card of its
+     own, and the game gets the whole screen once it starts. */
+  @media (max-width: 720px), (max-height: 600px) {
+    header { padding: 10px 0; }
+    body:not(.playing) #stage {
+      width: 100%; min-width: 0; aspect-ratio: auto; overflow: visible;
+      background: none; box-shadow: none;
+    }
+    body:not(.playing) #canvas { display: none; }
+    body:not(.playing) .overlay { position: static; border-radius: 10px; padding: 22px 16px; }
+  }
+
+  /* Playing with the whole screen: the game draws its thumb sticks and a menu button around the
+     field (src/main.cpp), and everything else on the page moves into that menu. */
+  body.game-only { overflow: hidden; overscroll-behavior: none; background: #0b0e12; }
+  body.game-only header, body.game-only #bar, body.game-only .info, body.game-only footer { display: none; }
+  body.game-only #stage {
+    position: fixed; inset: 0; z-index: 1;
+    width: auto; min-width: 0; height: auto; aspect-ratio: auto; margin: 0;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    border-radius: 0; box-shadow: none; background: #0b0e12;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  #menu {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: center;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+             max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    background: rgb(0 0 0 / .6);
+  }
+  #menu[hidden] { display: none; }
+  #menu .card {
+    display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; /* the column may shrink to fit */
+    width: min(460px, 100%); max-height: 100%; overflow: auto; overscroll-behavior: contain;
+    padding: 18px; border-radius: 12px;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  }
+  #menu h2 { margin: 0; font-size: 1.25rem; overflow-wrap: anywhere; }
+  #menu p { margin: 0; color: var(--muted); }
+  #menu .row { justify-content: stretch; flex-wrap: nowrap; }
+  #menu .row > * { flex: 1 1 0; }
+  #menu .row > input + button { flex: 0 0 auto; white-space: nowrap; } /* "Copy link" stays on one line */
+  #menu input { min-width: 0; background: var(--raised); color: var(--muted); border-color: var(--border); }
+  #menu button { background: var(--raised); color: var(--text); border-color: var(--border); }
+  #menu button.primary { background: var(--accent); color: var(--accent-ink); }
 </style>
 </head>
 <body>
@@ -150,10 +211,32 @@
           <button type="submit">Join</button>
         </form>
       </div>
-      <p class="controls"><kbd>WASD</kbd> or arrows to move · click to shoot · on touch screens, drag your knight and tap to shoot</p>
+      <p class="controls">
+        <span class="mouse-only"><kbd>WASD</kbd> or arrows to move · click to shoot</span>
+        <span class="touch-only">Left thumb moves · right thumb aims and fires · tap it to hit the nearest red knight</span>
+      </p>
       <p id="status" class="sub" role="status"></p>
     </div>
     <noscript class="overlay">Knight Survival needs JavaScript and WebAssembly to run in your browser.</noscript>
+  </div>
+
+  <div id="menu" hidden role="dialog" aria-modal="true" aria-labelledby="menu-title">
+    <div class="card">
+      <h2 id="menu-title">Room: <span id="menu-room"></span></h2>
+      <p>Send this link to friends to play together:</p>
+      <div class="row">
+        <input id="menu-invite" readonly aria-label="Invite link">
+        <button id="menu-copy" type="button">Copy link</button>
+      </div>
+      <div class="row">
+        <button id="menu-full" type="button" hidden>Full screen</button>
+        <button id="menu-change" type="button">Change room</button>
+      </div>
+      <p id="menu-install" hidden>For a full-screen game on iPhone: tap Share, then Add to Home Screen.</p>
+      <p class="touch-only">Left thumb: move. Right thumb: aim and fire, or tap it to shoot the nearest red knight.
+        You can also drag your knight, and tap the field to shoot there.</p>
+      <button id="menu-close" class="primary" type="button">Back to the game</button>
+    </div>
   </div>
 
   <div id="bar" hidden>
@@ -198,6 +281,23 @@
   let runtimeReady = false
   let started = false
 
+  // Phones and tablets (and small windows) play with the whole screen
+  const touchFirst = matchMedia('(pointer: coarse)')
+  const small = matchMedia('(max-width: 720px), (max-height: 600px)')
+  const root = document.documentElement
+  const canFullScreen = !!(root.requestFullscreen || root.webkitRequestFullscreen) && document.fullscreenEnabled !== false
+  const inFullScreen = () => !!(document.fullscreenElement || document.webkitFullscreenElement)
+  const installed = matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches || navigator.standalone === true
+  const iOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  function fullScreen(on) {
+    try {
+      if (on && root.requestFullscreen) root.requestFullscreen({navigationUI: 'hide'}).catch(() => {})
+      else if (on && root.webkitRequestFullscreen) root.webkitRequestFullscreen()
+      else if (!on && document.exitFullscreen) document.exitFullscreen().catch(() => {})
+      else if (!on && document.webkitExitFullscreen) document.webkitExitFullscreen()
+    } catch {}
+  }
+
   // Emscripten reads this object to find the canvas and report progress.
   var Module = {
     canvas,
@@ -230,11 +330,58 @@
     history.replaceState(null, '', room === 'lobby' ? location.pathname : '#room=' + room)
     $('lobby').hidden = true
     $('bar').hidden = false
-    $('room-name').textContent = room === 'lobby' ? 'public lobby' : room
-    $('invite').value = room === 'lobby' ? base : base + '#room=' + room
+    $('room-name').textContent = $('menu-room').textContent = room === 'lobby' ? 'public lobby' : room
+    $('invite').value = $('menu-invite').value = room === 'lobby' ? base : base + '#room=' + room
+    document.body.classList.add('playing')
+    if (touchFirst.matches || small.matches) {
+      document.body.classList.add('game-only') // before the game starts, so it sizes itself to the screen
+      if (touchFirst.matches && canFullScreen) fullScreen(true)
+    }
     Module.callMain(['--room', room])
     canvas.focus()
   }
+
+  // What the game asks of the page (see the EM_JS functions in src/main.cpp)
+  window.KnightUI = {
+    gameOnly: () => document.body.classList.contains('game-only'),
+    touchFirst: () => touchFirst.matches,
+    openMenu() {
+      $('menu-full').hidden = !canFullScreen
+      $('menu-full').textContent = inFullScreen() ? 'Leave full screen' : 'Full screen'
+      $('menu-install').hidden = !(iOS && !canFullScreen && !installed)
+      $('menu').hidden = false
+      $('menu-close').focus()
+    },
+  }
+  function closeMenu() {
+    $('menu').hidden = true
+    canvas.focus()
+  }
+  $('menu-close').addEventListener('click', closeMenu)
+  $('menu').addEventListener('click', event => event.target === $('menu') && closeMenu()) // tapped beside the card
+  $('menu').addEventListener('keydown', event => event.key === 'Escape' && closeMenu())
+  $('menu-full').addEventListener('click', () => {
+    fullScreen(!inFullScreen())
+    closeMenu()
+  })
+
+  async function copyInvite(button, input) {
+    try {
+      await navigator.clipboard.writeText(input.value)
+      const label = button.textContent
+      button.textContent = 'Copied!'
+      setTimeout(() => (button.textContent = label), 1500)
+    } catch {
+      input.select()
+    }
+  }
+  function changeRoom() {
+    history.replaceState(null, '', location.pathname)
+    location.reload()
+  }
+  $('menu-copy').addEventListener('click', () => copyInvite($('menu-copy'), $('menu-invite')))
+  $('menu-invite').addEventListener('focus', () => $('menu-invite').select())
+  $('menu-change').addEventListener('click', changeRoom)
 
   $('play').addEventListener('click', () => start(roomFromHash() || 'lobby'))
   $('create').addEventListener('click', () => start(randomRoom()))
@@ -244,20 +391,11 @@
     if (room) start(room)
   })
   $('copy').addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText($('invite').value)
-      $('copy').textContent = 'Copied!'
-      setTimeout(() => ($('copy').textContent = 'Copy invite link'), 1500)
-    } catch {
-      $('invite').select()
-    }
+    await copyInvite($('copy'), $('invite'))
     canvas.focus()
   })
   $('invite').addEventListener('focus', () => $('invite').select())
-  $('leave').addEventListener('click', () => {
-    history.replaceState(null, '', location.pathname)
-    location.reload()
-  })
+  $('leave').addEventListener('click', changeRoom)
   // Opening a different room link in this tab: start over in that room
   window.addEventListener('hashchange', () => (started ? location.reload() : refresh()))
   canvas.addEventListener('pointerdown', () => canvas.focus())

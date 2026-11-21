@@ -2,7 +2,13 @@
 // Objective: Collect yellow coins & Shoot red enemies with Left Click. Enough coins open the door
 //            to the next level (the levels are maps made with Tiled: see maps/README.md).
 // Controls: WASD/Arrows to move. Mouse Left-Click to shoot. Esc to Quit.
-//           Touch screens: drag your knight to move, tap anywhere else to shoot there.
+//           Touch screens: the left thumb stick moves, the right one aims and fires (a quick tap on
+//           it shoots the nearest red knight). You can also drag your knight, and tap the field to
+//           shoot there.
+//
+// The field is always 800 x 600 "units", drawn as big as the window or phone allows. On a phone
+// or tablet the web page gives the game the whole screen, and the thumb sticks go in the space
+// beside the field (sideways) or under it (upright).
 //
 // Multiplayer: everyone plays in one shared world, run by a host (see session.h).
 //   * Native build: start ./knight-server, then ./knight-survival [server-ip] on each computer.
@@ -13,11 +19,13 @@
 #include <SDL2/SDL.h>
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#include <emscripten/html5.h>
 #endif
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
 #include <map>
@@ -44,10 +52,20 @@ const int SOUTH = 4;
 const float SPAWN_PROTECTION = 2.0f; // seconds a fresh knight blinks and can't be caught
 const float RESPAWN_DELAY = 0.75f;   // so a click you meant as a shot doesn't respawn you
 const float BANNER_TIME = 2.5f;      // seconds "LEVEL 2" or "THE DOOR IS OPEN" stays on screen
+const float FIRE_INTERVAL = 0.18f;   // seconds between shots while the fire stick is pushed
+const float DEAD_ZONE = 0.12f;       // a thumb stick pushed less than this (of its radius) does nothing
 
 const SDL_Color WHITE{255, 255, 255, 255};
 const SDL_Color LIGHT{220, 220, 220, 255};
 const SDL_Color GOLD{255, 215, 0, 255};
+const SDL_Color AROUND{11, 14, 18, 255}; // the screen around the field
+
+#ifdef __EMSCRIPTEN__
+// What the web page around the game says, and the menu it shows (see KnightUI in web/shell.html)
+EM_JS(int, js_game_only, (), { return window.KnightUI && KnightUI.gameOnly() ? 1 : 0; });
+EM_JS(int, js_touch_first, (), { return window.KnightUI && KnightUI.touchFirst() ? 1 : 0; });
+EM_JS(void, js_open_menu, (), { if (window.KnightUI) KnightUI.openMenu(); });
+#endif
 
 // Player colors: 1 is the White Knight, 2 the Blue Knight, and from 3 on the White Knight tinted
 const SDL_Color TINTS[MAX_PLAYERS + 1] = {
@@ -67,6 +85,30 @@ struct Remote
 {
     float x, y;
     int face;
+};
+
+// Where everything goes on the screen, in units (the field is 800 x 600 of them)
+struct Screen
+{
+    float scaleX = 1, scaleY = 1;      // pixels per unit
+    float w = W, h = H;                // the whole screen
+    SDL_Rect field{0, 0, W, H};        // where the field is on it
+    bool sticks = false;               // show the thumb sticks
+    bool beside = false;               // ...in a space of their own, beside or under the field
+    float radius = 62;                 // of a thumb stick
+    SDL_FPoint moveHome{}, fireHome{}; // where the sticks wait when no thumb is on them
+    SDL_FRect moveZone{}, fireZone{};  // where a thumb picks them up, when they're beside the field
+    SDL_FRect menu{};                  // the menu button (w == 0: there is none)
+};
+
+// A thumb stick: it comes to where your thumb lands, and points where you push it
+struct Stick
+{
+    bool held = false;
+    SDL_FingerID finger = 0;
+    SDL_FPoint base{}, knob{}; // in screen units
+    float heldFor = 0;         // seconds
+    float travel = 0;          // the farthest it was pushed, as a share of its radius
 };
 
 struct Game
@@ -102,6 +144,12 @@ struct Game
     bool dragging = false;
     SDL_FingerID dragFinger = 0;
     float dragX = 0, dragY = 0;
+
+    // The screen, and the thumb sticks (on phones and tablets, or once the screen is touched)
+    Screen screen;
+    bool touchControls = false;
+    Stick move, fire;
+    float fireCooldown = 0; // seconds until the fire stick shoots again
 };
 
 // Helper: Which way is (dx, dy) pointing? Keeps `current` if it's (almost) no direction at all.
@@ -118,6 +166,180 @@ int facing(float dx, float dy, int current)
 float getDistance(float x1, float y1, float x2, float y2)
 {
     return std::hypot(x2 - x1, y2 - y1);
+}
+
+// Works out where everything goes on the screen this frame
+void layOut(Game &g)
+{
+    bool menu = false;
+#ifdef __EMSCRIPTEN__
+    // The web page decides how big the canvas is (the whole screen while playing on a phone). Draw
+    // at the screen's own resolution, but at most 2 pixels per CSS pixel: sharp, and easy on phones.
+    double cssW = 0, cssH = 0;
+    emscripten_get_element_css_size("#canvas", &cssW, &cssH);
+    if (cssW >= 1 && cssH >= 1)
+    {
+        double ratio = std::clamp(emscripten_get_device_pixel_ratio(), 1.0, 2.0);
+        int wantW = (int)std::lround(cssW * ratio), wantH = (int)std::lround(cssH * ratio), haveW = 0, haveH = 0;
+        SDL_GetWindowSize(g.window, &haveW, &haveH);
+        if (wantW != haveW || wantH != haveH)
+            SDL_SetWindowSize(g.window, wantW, wantH);
+    }
+    menu = js_game_only();
+#endif
+    int pw = W, ph = H;
+    SDL_GetRendererOutputSize(g.renderer, &pw, &ph);
+    pw = std::max(pw, 1);
+    ph = std::max(ph, 1);
+
+    Screen s;
+    s.sticks = g.touchControls;
+    float aspect = (float)pw / (float)ph, fieldAspect = (float)W / H;
+    bool wide = aspect >= fieldAspect;
+    if (!s.sticks && std::fabs(aspect / fieldAspect - 1) < 0.03f)
+    {
+        // The field's own shape (the game in the web page on a computer): it fills the screen
+        s.scaleX = (float)pw / W;
+        s.scaleY = (float)ph / H;
+    }
+    else
+    {
+        s.scaleX = s.scaleY = wide ? (float)ph / H : (float)pw / W;
+        s.w = (float)pw / s.scaleX;
+        s.h = (float)ph / s.scaleY;
+        if (wide) // room left and right of the field
+        {
+            float side = (s.w - W) / 2;
+            s.field.x = (int)std::floor(side);
+            if (s.sticks && side >= 150) // a phone held sideways: a thumb stick on each side
+            {
+                s.beside = true;
+                s.radius = std::min(side * 0.4f, 100.0f);
+                s.moveZone = {0, 0, (float)s.field.x, s.h};
+                s.fireZone = {(float)(s.field.x + W), 0, s.w - (float)(s.field.x + W), s.h};
+                s.moveHome = {s.moveZone.w / 2, H * 0.66f};
+                s.fireHome = {s.fireZone.x + s.fireZone.w / 2, H * 0.66f};
+            }
+        }
+        else // room above and below
+        {
+            float below = s.h - H;
+            if (s.sticks && below >= 260) // a phone held upright: the field on top, the sticks under it
+            {
+                s.beside = true;
+                s.radius = std::min(below * 0.2f, 120.0f);
+                s.moveZone = {0, (float)H, W / 2.0f, below};
+                s.fireZone = {W / 2.0f, (float)H, W / 2.0f, below};
+                s.moveHome = {W * 0.25f, H + below * 0.64f};
+                s.fireHome = {W * 0.75f, H + below * 0.64f};
+            }
+            else
+            {
+                s.field.y = (int)std::floor(below / 2);
+            }
+        }
+    }
+    if (s.sticks && !s.beside) // no room of their own: on the field, in its bottom corners
+    {
+        s.moveHome = {s.field.x + 96.0f, s.field.y + H - 104.0f};
+        s.fireHome = {s.field.x + W - 96.0f, s.field.y + H - 104.0f};
+    }
+    if (menu) // the game has the whole screen: the room, invite link and so on are in a menu
+    {
+        if (s.field.x >= 100)
+            s.menu = {s.field.x / 2.0f - 40, 14, 80, 56}; // top left, beside the field
+        else if (s.beside)
+            s.menu = {W / 2.0f - 40, H + 14.0f, 80, 56}; // under the field
+        else
+            s.menu = {s.field.x + W / 2.0f - 34, s.field.y + 2.0f, 68, 30}; // on the top wall, between score and room
+    }
+    g.screen = s;
+}
+
+// Screen units for a touch (SDL gives finger positions from 0 to 1 across the window)...
+SDL_FPoint touchPoint(const Game &g, float x, float y)
+{
+    return {x * g.screen.w, y * g.screen.h};
+}
+
+// ...and for the mouse (in window coordinates)
+SDL_FPoint mousePoint(Game &g, int x, int y)
+{
+    int ww = 1, wh = 1, pw = 1, ph = 1;
+    SDL_GetWindowSize(g.window, &ww, &wh);
+    SDL_GetRendererOutputSize(g.renderer, &pw, &ph);
+    return {(float)x * (float)pw / (float)std::max(ww, 1) / g.screen.scaleX, (float)y * (float)ph / (float)std::max(wh, 1) / g.screen.scaleY};
+}
+
+// Where a point on the screen is on the field
+SDL_FPoint onField(const Game &g, SDL_FPoint p)
+{
+    return {p.x - (float)g.screen.field.x, p.y - (float)g.screen.field.y};
+}
+
+bool inside(const SDL_FRect &r, SDL_FPoint p)
+{
+    return r.w > 0 && p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h;
+}
+
+// The thumb stick (if any) that a thumb coming down at p picks up
+Stick *stickAt(Game &g, SDL_FPoint p)
+{
+    const Screen &s = g.screen;
+    if (!s.sticks)
+        return nullptr;
+    if (s.beside)
+        return inside(s.moveZone, p) ? &g.move : inside(s.fireZone, p) ? &g.fire : nullptr;
+    if (getDistance(p.x, p.y, s.moveHome.x, s.moveHome.y) < s.radius * 1.6f)
+        return &g.move;
+    if (getDistance(p.x, p.y, s.fireHome.x, s.fireHome.y) < s.radius * 1.6f)
+        return &g.fire;
+    return nullptr;
+}
+
+void pushStick(Game &g, Stick &stick, SDL_FPoint p)
+{
+    float r = g.screen.radius, dx = p.x - stick.base.x, dy = p.y - stick.base.y, d = std::hypot(dx, dy);
+    if (d > r)
+    {
+        dx *= r / d;
+        dy *= r / d;
+    }
+    stick.knob = {stick.base.x + dx, stick.base.y + dy};
+    stick.travel = std::max(stick.travel, std::min(d, r) / r);
+}
+
+void grabStick(Game &g, Stick &stick, SDL_FingerID finger, SDL_FPoint p)
+{
+    const Screen &s = g.screen;
+    stick.held = true;
+    stick.finger = finger;
+    stick.heldFor = 0;
+    stick.travel = 0;
+    stick.base = &stick == &g.move ? s.moveHome : s.fireHome;
+    if (s.beside) // it comes to the thumb, as long as it still fits in its space
+    {
+        const SDL_FRect &zone = &stick == &g.move ? s.moveZone : s.fireZone;
+        auto fit = [&](float v, float start, float length) {
+            return length > 2 * s.radius ? std::clamp(v, start + s.radius, start + length - s.radius) : start + length / 2;
+        };
+        stick.base = {fit(p.x, zone.x, zone.w), fit(p.y, zone.y, zone.h)};
+    }
+    pushStick(g, stick, p);
+}
+
+void letGoOfEverything(Game &g)
+{
+    g.move.held = g.fire.held = g.dragging = false;
+    g.fireCooldown = 0;
+}
+
+void openMenu(Game &g)
+{
+    letGoOfEverything(g); // the menu covers the game: fingers lifted there never reach it
+#ifdef __EMSCRIPTEN__
+    js_open_menu();
+#endif
 }
 
 // Helper: Load a BMP texture safely
@@ -298,6 +520,49 @@ void shootAt(Game &g, float targetX, float targetY)
     }
 }
 
+// Would a bullet get from (x0, y0) to (x1, y1) without hitting a wall?
+bool clearShot(const Level &level, float x0, float y0, float x1, float y1)
+{
+    int steps = (int)(getDistance(x0, y0, x1, y1) / 8) + 1;
+    for (int i = 1; i <= steps; i++)
+    {
+        float t = (float)i / (float)steps;
+        if (level.wall((int)std::floor((x0 + (x1 - x0) * t) / CELL), (int)std::floor((y0 + (y1 - y0) * t) / CELL)))
+            return false;
+    }
+    return true;
+}
+
+// A quick tap on the fire stick: shoot the nearest red knight (one that no wall is hiding, if
+// there is one), or else straight ahead
+void shootNearest(Game &g)
+{
+    const Snapshot &world = g.session->world();
+    const Level &level = builtInLevel(world.map);
+    float centerX = g.player.x + g.player.w / 2, centerY = g.player.y + g.player.h / 2;
+    const Point *target = nullptr;
+    float best = 0;
+    bool bestInSight = false;
+    for (auto &e : world.enemies)
+    {
+        float d = getDistance(centerX, centerY, e.x + ENEMY_SIZE / 2, e.y + ENEMY_SIZE / 2);
+        bool inSight = clearShot(level, centerX, centerY, e.x + ENEMY_SIZE / 2, e.y + ENEMY_SIZE / 2);
+        if (!target || (inSight && !bestInSight) || (inSight == bestInSight && d < best))
+        {
+            target = &e;
+            best = d;
+            bestInSight = inSight;
+        }
+    }
+    if (target)
+    {
+        shootAt(g, target->x + ENEMY_SIZE / 2, target->y + ENEMY_SIZE / 2);
+        return;
+    }
+    float angle = (float)g.face * std::numbers::pi_v<float> / 4; // 0 = north, clockwise
+    shootAt(g, centerX + std::sin(angle) * 100, centerY - std::cos(angle) * 100);
+}
+
 // 1. INPUT HANDLING
 void handleEvents(Game &g)
 {
@@ -311,6 +576,9 @@ void handleEvents(Game &g)
 #ifndef __EMSCRIPTEN__
         if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE)
             g.running = false;
+#else
+        if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE && g.screen.menu.w > 0)
+            openMenu(g);
 #endif
         bool playing = g.state == GameState::PLAYING && !g.session->spectating();
         bool canRespawn = g.state == GameState::GAME_OVER && g.deadTime > RESPAWN_DELAY;
@@ -318,8 +586,11 @@ void handleEvents(Game &g)
         // SHOOTING LOGIC: Detect Left Mouse Click
         if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT)
         {
-            if (playing)
-                shootAt(g, (float)event.button.x, (float)event.button.y);
+            SDL_FPoint p = mousePoint(g, event.button.x, event.button.y), f = onField(g, p);
+            if (inside(g.screen.menu, p))
+                openMenu(g);
+            else if (playing)
+                shootAt(g, f.x, f.y);
             else if (canRespawn)
                 respawn(g);
         }
@@ -327,34 +598,66 @@ void handleEvents(Game &g)
         if (event.type == SDL_KEYDOWN && canRespawn && !event.key.repeat && event.key.keysym.sym != SDLK_ESCAPE)
             respawn(g);
 
-        // TOUCH: drag your knight to move it, tap anywhere else to shoot there
+        // TOUCH: the thumb sticks; or drag your knight to move it, and tap the field to shoot there
         if (event.type == SDL_FINGERDOWN)
         {
-            float x = event.tfinger.x * W, y = event.tfinger.y * H;
+            g.touchControls = true; // a touch screen: show the thumb sticks from now on
+            SDL_FPoint p = touchPoint(g, event.tfinger.x, event.tfinger.y), f = onField(g, p);
             float centerX = g.player.x + g.player.w / 2, centerY = g.player.y + g.player.h / 2;
-            if (canRespawn)
+            Stick *stick = playing ? stickAt(g, p) : nullptr;
+            if (inside(g.screen.menu, p))
+            {
+                openMenu(g);
+            }
+            else if (canRespawn)
             {
                 respawn(g);
             }
-            else if (playing && !g.dragging && getDistance(x, y, centerX, centerY) < 90)
+            else if (stick)
+            {
+                if (!stick->held)
+                    grabStick(g, *stick, event.tfinger.fingerId, p);
+            }
+            else if (playing && !g.dragging && getDistance(f.x, f.y, centerX, centerY) < 90)
             {
                 g.dragging = true;
                 g.dragFinger = event.tfinger.fingerId;
-                g.dragX = x;
-                g.dragY = y;
+                g.dragX = f.x;
+                g.dragY = f.y;
             }
             else if (playing)
             {
-                shootAt(g, x, y);
+                shootAt(g, f.x, f.y);
             }
         }
-        if (event.type == SDL_FINGERMOTION && g.dragging && event.tfinger.fingerId == g.dragFinger)
+        if (event.type == SDL_FINGERMOTION)
         {
-            g.dragX = event.tfinger.x * W;
-            g.dragY = event.tfinger.y * H;
+            SDL_FPoint p = touchPoint(g, event.tfinger.x, event.tfinger.y), f = onField(g, p);
+            for (Stick *stick : {&g.move, &g.fire})
+            {
+                if (stick->held && stick->finger == event.tfinger.fingerId)
+                    pushStick(g, *stick, p);
+            }
+            if (g.dragging && event.tfinger.fingerId == g.dragFinger)
+            {
+                g.dragX = f.x;
+                g.dragY = f.y;
+            }
         }
-        if (event.type == SDL_FINGERUP && g.dragging && event.tfinger.fingerId == g.dragFinger)
-            g.dragging = false;
+        if (event.type == SDL_FINGERUP)
+        {
+            if (g.fire.held && g.fire.finger == event.tfinger.fingerId)
+            {
+                if (playing && g.fire.heldFor < 0.3f && g.fire.travel < 0.35f) // a quick tap, not a push
+                    shootNearest(g);
+                g.fire.held = false;
+                g.fireCooldown = 0;
+            }
+            if (g.move.held && g.move.finger == event.tfinger.fingerId)
+                g.move.held = false;
+            if (g.dragging && event.tfinger.fingerId == g.dragFinger)
+                g.dragging = false;
+        }
     }
 }
 
@@ -387,15 +690,41 @@ void update(Game &g, float deltaTime)
             }
         }
 
+        if (g.move.held) // the left thumb stick: the further you push it, the faster you go
+        {
+            float dx = (g.move.knob.x - g.move.base.x) / g.screen.radius, dy = (g.move.knob.y - g.move.base.y) / g.screen.radius;
+            float push = std::hypot(dx, dy);
+            if (push > DEAD_ZONE)
+            {
+                float speed = std::min(1.0f, (push - DEAD_ZONE) / (0.75f - DEAD_ZONE));
+                moveX += dx / push * speed;
+                moveY += dy / push * speed;
+            }
+        }
+
         if (moveX != 0 || moveY != 0)
         {
-            // Walk, stopping at walls (and sliding along them)
+            // Walk, stopping at walls (and sliding along them). Keys always walk at full speed.
             float length = std::sqrt(moveX * moveX + moveY * moveY);
+            float step = PLAYER_SPEED * deltaTime * std::min(1.0f, length);
             Rect me{g.player.x, g.player.y, g.player.w, g.player.h};
-            builtInLevel(g.session->world().map).slide(me, (moveX / length) * PLAYER_SPEED * deltaTime, (moveY / length) * PLAYER_SPEED * deltaTime);
+            builtInLevel(g.session->world().map).slide(me, moveX / length * step, moveY / length * step);
             g.player.x = me.x;
             g.player.y = me.y;
             g.face = facing(moveX, moveY, g.face);
+        }
+
+        // The right thumb stick: aim where it points, and keep firing
+        g.fireCooldown = std::max(0.0f, g.fireCooldown - deltaTime);
+        if (g.fire.held)
+        {
+            g.fire.heldFor += deltaTime;
+            float dx = g.fire.knob.x - g.fire.base.x, dy = g.fire.knob.y - g.fire.base.y, push = std::hypot(dx, dy);
+            if (push > g.screen.radius * 0.35f && g.fireCooldown <= 0)
+            {
+                shootAt(g, g.player.x + g.player.w / 2 + dx / push * 100, g.player.y + g.player.h / 2 + dy / push * 100);
+                g.fireCooldown = FIRE_INTERVAL;
+            }
         }
 
         // Keep player in bounds
@@ -446,7 +775,7 @@ void update(Game &g, float deltaTime)
                 g.state = GameState::GAME_OVER;
                 g.deadTime = 0;
                 g.finalScore = world.score;
-                g.dragging = false;
+                letGoOfEverything(g);
                 break;
             }
         }
@@ -572,7 +901,7 @@ void drawMap(Game &g, const Level &level, int map)
         return;
     }
     SDL_SetRenderDrawColor(g.renderer, 0, 0, 0, 255);
-    SDL_RenderClear(g.renderer);
+    SDL_RenderFillRect(g.renderer, nullptr); // the field (the viewport), not the whole screen
     drawTiles(g, level);
 }
 
@@ -650,7 +979,8 @@ void drawBanner(SDL_Renderer *renderer, const std::string &big, const std::strin
 }
 
 // 3. RENDERING
-void render(Game &g)
+// The field, in its own 800 x 600 units (render() has pointed the renderer at it)
+void drawField(Game &g)
 {
     SDL_Renderer *renderer = g.renderer;
     const Snapshot &world = g.session->world();
@@ -768,7 +1098,147 @@ void render(Game &g)
         if (g.deadTime > RESPAWN_DELAY)
             drawCentered(renderer, "PRESS ANY KEY OR TAP TO PLAY AGAIN", 360, 2);
     }
+}
 
+// Shapes for the thumb sticks, made of triangles
+void fillTriangles(SDL_Renderer *renderer, const std::vector<SDL_FPoint> &corners, SDL_Color color)
+{
+    std::vector<SDL_Vertex> vertices;
+    for (SDL_FPoint p : corners)
+        vertices.push_back({p, color, {0, 0}});
+    SDL_RenderGeometry(renderer, nullptr, vertices.data(), (int)vertices.size(), nullptr, 0);
+}
+
+// A disc from radius `inner` (0: a full disc) out to `outer`
+void fillRing(SDL_Renderer *renderer, SDL_FPoint c, float inner, float outer, SDL_Color color)
+{
+    const int SIDES = 48;
+    std::vector<SDL_FPoint> corners;
+    for (int i = 0; i < SIDES; i++)
+    {
+        float a = 2 * std::numbers::pi_v<float> * (float)i / SIDES, b = 2 * std::numbers::pi_v<float> * (float)(i + 1) / SIDES;
+        SDL_FPoint outA{c.x + outer * std::cos(a), c.y + outer * std::sin(a)}, outB{c.x + outer * std::cos(b), c.y + outer * std::sin(b)};
+        SDL_FPoint inA{c.x + inner * std::cos(a), c.y + inner * std::sin(a)}, inB{c.x + inner * std::cos(b), c.y + inner * std::sin(b)};
+        corners.insert(corners.end(), {outA, outB, inA});
+        if (inner > 0)
+            corners.insert(corners.end(), {inA, outB, inB});
+    }
+    fillTriangles(renderer, corners, color);
+}
+
+// A thumb stick (fainter while no thumb is on it). The fire stick has a cross-hair on its knob,
+// the move stick little arrows round its edge.
+void drawStick(Game &g, const Stick &stick, SDL_FPoint home, bool fire)
+{
+    SDL_Renderer *renderer = g.renderer;
+    const Screen &s = g.screen;
+    SDL_FPoint base = stick.held ? stick.base : home, knob = stick.held ? stick.knob : home;
+    float strength = stick.held ? 1.0f : s.beside ? 0.75f : 0.45f;
+    auto shade = [&](SDL_Color c, float alpha) { return SDL_Color{c.r, c.g, c.b, (Uint8)(alpha * strength)}; };
+    SDL_Color accent = fire ? GOLD : SDL_Color{230, 235, 240, 255}, dark{30, 22, 4, 255};
+    float r = s.radius, knobR = r * 0.42f;
+
+    fillRing(renderer, base, 0, r, shade({0, 0, 0, 0}, 120));
+    fillRing(renderer, base, r - 3, r, shade(accent, 170));
+    if (!fire)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            float a = (float)i * std::numbers::pi_v<float> / 2, tip = r * 0.86f, back = r * 0.7f, half = r * 0.11f;
+            float cx = std::cos(a), sy = std::sin(a);
+            fillTriangles(renderer, {{base.x + cx * tip, base.y + sy * tip}, {base.x + cx * back - sy * half, base.y + sy * back + cx * half},
+                                     {base.x + cx * back + sy * half, base.y + sy * back - cx * half}},
+                          shade(accent, 150));
+        }
+    }
+    fillRing(renderer, knob, 0, knobR, shade(accent, 205));
+    if (fire)
+    {
+        fillRing(renderer, knob, knobR * 0.5f, knobR * 0.62f, shade(dark, 230));
+        SDL_SetRenderDrawColor(renderer, dark.r, dark.g, dark.b, (Uint8)(230 * strength));
+        SDL_FRect across{knob.x - knobR * 0.85f, knob.y - 1.5f, knobR * 1.7f, 3}, down{knob.x - 1.5f, knob.y - knobR * 0.85f, 3, knobR * 1.7f};
+        SDL_RenderFillRectF(renderer, &across);
+        SDL_RenderFillRectF(renderer, &down);
+    }
+}
+
+// The menu button: three bars, and the word if there's room for it
+void drawMenuButton(Game &g)
+{
+    SDL_Renderer *renderer = g.renderer;
+    const SDL_FRect &b = g.screen.menu;
+    SDL_SetRenderDrawColor(renderer, 20, 26, 33, 215);
+    SDL_RenderFillRectF(renderer, &b);
+    SDL_SetRenderDrawColor(renderer, 120, 132, 145, 230);
+    SDL_RenderDrawRectF(renderer, &b);
+    bool roomy = b.h >= 50;
+    float barW = roomy ? 34 : 26, barH = roomy ? 5 : 3, gap = roomy ? 9 : 7;
+    float top = roomy ? b.y + 9 : b.y + (b.h - (gap * 2 + barH)) / 2;
+    SDL_SetRenderDrawColor(renderer, 235, 235, 235, 255);
+    for (int i = 0; i < 3; i++)
+    {
+        SDL_FRect bar{b.x + (b.w - barW) / 2, top + (float)i * gap, barW, barH};
+        SDL_RenderFillRectF(renderer, &bar);
+    }
+    if (roomy)
+        drawText(renderer, "MENU", b.x + b.w / 2 - textWidth("MENU", 2) / 2, b.y + b.h - 18, 2, LIGHT);
+}
+
+// Everything outside the field, in screen units: the thumb sticks, the menu button, and on a
+// phone held upright the score and level in big letters under the field
+void drawScreen(Game &g)
+{
+    SDL_Renderer *renderer = g.renderer;
+    const Screen &s = g.screen;
+    const Snapshot &world = g.session->world();
+    const Level &level = builtInLevel(world.map);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+
+    float below = s.h - (float)(s.field.y + H);
+    if (s.beside && below >= 600)
+    {
+        auto centered = [&](const std::string &text, float y, int scale, SDL_Color color) {
+            drawTextShadowed(renderer, text, W / 2.0f - textWidth(text, scale) / 2, y, scale, color);
+        };
+        centered((world.players.size() > 1 ? "TEAM SCORE " : "SCORE ") + std::to_string(world.score), H + 100.0f, 4, WHITE);
+        centered("LEVEL " + std::to_string(world.level) + "  " + level.name, H + 156.0f, 3, LIGHT);
+        if (!level.doors.empty())
+        {
+            int left = world.coinsLeft;
+            centered(left > 0 ? std::to_string(left) + (left == 1 ? " COIN" : " COINS") + " TO OPEN THE DOOR" : "THE DOOR IS OPEN", H + 194.0f, 3,
+                     left > 0 ? LIGHT : GOLD);
+        }
+    }
+    if (s.beside && below >= 500)
+        drawTextShadowed(renderer, "TURN SIDEWAYS FOR A BIGGER VIEW", W / 2.0f - textWidth("TURN SIDEWAYS FOR A BIGGER VIEW", 2) / 2, s.h - 44, 2,
+                         {150, 160, 172, 255});
+
+    if (s.sticks && g.state == GameState::PLAYING && !g.session->spectating())
+    {
+        drawStick(g, g.move, s.moveHome, false);
+        drawStick(g, g.fire, s.fireHome, true);
+        if (s.beside)
+        {
+            drawTextShadowed(renderer, "MOVE", s.moveHome.x - textWidth("MOVE", 2) / 2, s.moveHome.y + s.radius + 14, 2, LIGHT);
+            drawTextShadowed(renderer, "FIRE", s.fireHome.x - textWidth("FIRE", 2) / 2, s.fireHome.y + s.radius + 14, 2, LIGHT);
+        }
+    }
+    if (s.menu.w > 0)
+        drawMenuButton(g);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+}
+
+void render(Game &g)
+{
+    SDL_Renderer *renderer = g.renderer;
+    const Screen &s = g.screen;
+    SDL_SetRenderDrawColor(renderer, AROUND.r, AROUND.g, AROUND.b, 255);
+    SDL_RenderClear(renderer); // all of it: clearing ignores the viewport
+    SDL_RenderSetScale(renderer, s.scaleX, s.scaleY);
+    SDL_RenderSetViewport(renderer, &s.field);
+    drawField(g);
+    SDL_RenderSetViewport(renderer, nullptr);
+    drawScreen(g);
     SDL_RenderPresent(renderer);
 }
 
@@ -781,6 +1251,7 @@ void frame(Game &g)
         g.protection = SPAWN_PROTECTION; // back from a hidden tab: a moment to look around
     deltaTime = std::min(deltaTime, 0.1f); // don't jump ahead after a pause
 
+    layOut(g);
     handleEvents(g);
     update(g, deltaTime);
     render(g);
@@ -790,6 +1261,29 @@ void frame(Game &g)
 void frameCallback(void *game)
 {
     frame(*static_cast<Game *>(game));
+}
+
+Game *activeGame = nullptr; // for knight_debug_state
+
+// Lets the page (and the automated tests) peek at the game: Module.ccall('knight_debug_state', 'string').
+// What the session knows (see debugJson in session_web.cpp), and where things are on the screen:
+// "screen" is [field x, field y, screen width, screen height], all in units.
+extern "C" EMSCRIPTEN_KEEPALIVE const char *knight_debug_state()
+{
+    static std::string state;
+    if (!activeGame || !activeGame->session)
+        return "{}";
+    const Screen &s = activeGame->screen;
+    char screen[512];
+    std::snprintf(screen, sizeof(screen),
+                  "\"screen\":[%d,%d,%.2f,%.2f],\"sticks\":%s,\"beside\":%s,\"radius\":%.1f,\"move\":[%.1f,%.1f],"
+                  "\"fire\":[%.1f,%.1f],\"menu\":[%.1f,%.1f,%.1f,%.1f]",
+                  s.field.x, s.field.y, s.w, s.h, s.sticks ? "true" : "false", s.beside ? "true" : "false", s.radius,
+                  s.moveHome.x, s.moveHome.y, s.fireHome.x, s.fireHome.y, s.menu.x, s.menu.y, s.menu.w, s.menu.h);
+    state = activeGame->session->debugJson();
+    state.pop_back(); // its closing brace
+    state += std::string(state.size() > 1 ? "," : "") + screen + "}";
+    return state.c_str();
 }
 #endif
 
@@ -809,7 +1303,11 @@ int main(int argc, char *argv[])
 
     // static: in the browser, main() returns while the game keeps running
     static Game g;
-    g.window = SDL_CreateWindow("Score: 0", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, W, H, 0);
+    Uint32 windowFlags = 0;
+#ifndef __EMSCRIPTEN__
+    windowFlags = SDL_WINDOW_RESIZABLE; // the field grows with the window (in the browser, the page sizes it)
+#endif
+    g.window = SDL_CreateWindow("Score: 0", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, W, H, windowFlags);
     g.renderer = SDL_CreateRenderer(g.window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     if (g.window && !g.renderer)
         g.renderer = SDL_CreateRenderer(g.window, -1, 0); // no graphics card? software works too
@@ -842,6 +1340,10 @@ int main(int argc, char *argv[])
     g.wood = loadBMP(g.renderer, assets + "Tiles/WoodTile.bmp", false);
 
     std::srand(static_cast<unsigned int>(SDL_GetPerformanceCounter()));
+#ifdef __EMSCRIPTEN__
+    g.touchControls = js_touch_first(); // a phone or tablet: thumb sticks from the start
+    activeGame = &g;
+#endif
     g.session = createSession(argc, argv);
     SDL_FPoint start = safeSpot(g.session->world(), g.session->myId());
     g.player.x = start.x;

@@ -76,7 +76,8 @@ if(EMSCRIPTEN)
 
     # Everything else the page needs goes next to it
     add_custom_command(TARGET knight-survival POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy ${WEB_DIR}/net.js ${WEB_DIR}/favicon.png ${WEB_DIR}/preview.png ${SITE_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy ${WEB_DIR}/net.js ${WEB_DIR}/favicon.png ${WEB_DIR}/preview.png
+                ${WEB_DIR}/manifest.webmanifest ${WEB_DIR}/icon-180.png ${WEB_DIR}/icon-192.png ${WEB_DIR}/icon-512.png ${SITE_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${WEB_DIR}/vendor ${SITE_DIR}/vendor
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/LICENSE ${SITE_DIR}/LICENSE.txt
         VERBATIM)

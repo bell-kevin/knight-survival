@@ -187,8 +187,8 @@ public:
         return lines + std::to_string(snap.players.size()) + " PLAYERS";
     }
 
-    // For tests and the curious: what this browser thinks is going on (see knight_debug_state).
-    std::string debugJson() const
+    // For tests and the curious: what this browser thinks is going on (see knight_debug_state in main.cpp).
+    std::string debugJson() const override
     {
         auto points = [](const std::vector<Point> &list) {
             std::string out = "[";
@@ -535,16 +535,7 @@ private:
     bool full = false;
 };
 
-P2PSession *activeSession = nullptr;
 } // namespace
-
-// Lets the page (and the automated tests) peek at the session: Module.ccall('knight_debug_state', 'string')
-extern "C" EMSCRIPTEN_KEEPALIVE const char *knight_debug_state()
-{
-    static std::string state;
-    state = activeSession ? activeSession->debugJson() : "{}";
-    return state.c_str();
-}
 
 std::unique_ptr<Session> createSession(int argc, char *argv[])
 {
@@ -559,7 +550,5 @@ std::unique_ptr<Session> createSession(int argc, char *argv[])
     std::transform(room.begin(), room.end(), room.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     if (room.empty() || room.size() > 32)
         room = "lobby";
-    auto session = std::make_unique<P2PSession>(room);
-    activeSession = session.get();
-    return session;
+    return std::make_unique<P2PSession>(room);
 }

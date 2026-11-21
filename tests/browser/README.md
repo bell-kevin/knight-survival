@@ -10,6 +10,9 @@ Nostr relays and WebRTC, the same way people play on the website. They check tha
 - collecting a level's coins opens its door, and walking through it takes the whole team to the
   next level (everybody starting on the new map's floor, not on top of each other),
 - touch controls work (drag your knight, tap to shoot),
+- on a phone held upright and sideways, the lobby fits on the screen, the game takes the whole
+  screen (and follows when the phone turns), the thumb sticks walk and fire, also both at once,
+  and the menu has the invite link,
 - the landing page loads cleanly and private-room invite links work.
 
 They need Node.js and an internet connection (the relays are public servers on the internet).
