@@ -17,8 +17,8 @@ World::World(double epoch, unsigned seed, const LevelSet *levels)
     startLevel(1, 0);
 }
 
-// A fresh level: the coins move to the new map, and the red knights and bullets of the old one
-// are gone. The new level's own red knights come out once somebody is there (see step).
+// A fresh level: the coins move to the new map, and the bad guys and bullets of the old one are
+// gone. The new level's own bad guys come out once somebody is there (see step).
 void World::startLevel(int number, int map)
 {
     levelNumber = std::max(1, number);
@@ -55,47 +55,64 @@ Point World::randomCoinSpot()
     return {(float)(cell % map.cols * CELL) + margin, (float)(cell / map.cols * CELL) + margin};
 }
 
-// Where the map says red knights come from (or else anywhere players can get to), but not
-// right on top of a player: the first spot that's far from everybody, or else the farthest.
-Point World::randomEnemySpot()
+// Where the next bad guy comes from (its middle), and which kind it is: one of the map's enemy
+// spawn points, each bringing its own kind. When those are all too close to the players, or the
+// map has none, anywhere players can get to (with a kind one of the spawn points brings, or a
+// red knight). Never right on top of a player: the first spot that's far from everybody, or
+// else the farthest.
+EnemySpot World::randomEnemySpot()
 {
     const Level &map = level();
-    std::vector<Point> spots;
-    for (Point p : map.enemySpawns)
-        spots.push_back({p.x - ENEMY_SIZE / 2, p.y - ENEMY_SIZE / 2});
+    std::vector<EnemySpot> spots = map.enemySpawns;
     std::shuffle(spots.begin(), spots.end(), rng);
     for (int tries = 0; tries < 20; tries++)
     {
+        int kind = RED_KNIGHT;
+        if (!map.enemySpawns.empty())
+        {
+            std::uniform_int_distribution<size_t> which(0, map.enemySpawns.size() - 1);
+            kind = map.enemySpawns[which(rng)].kind;
+        }
         if (!map.open.empty())
         {
             std::uniform_int_distribution<size_t> pick(0, map.open.size() - 1);
-            spots.push_back(map.spotPosition(map.open[pick(rng)]));
+            Point p = map.spotPosition(map.open[pick(rng)]);
+            spots.push_back({p.x + KNIGHT_SIZE / 2, p.y + KNIGHT_SIZE / 2, kind});
         }
         else
         {
-            std::uniform_int_distribution<int> x(0, W - (int)ENEMY_SIZE), y(0, H - (int)ENEMY_SIZE);
-            spots.push_back({(float)x(rng), (float)y(rng)});
+            std::uniform_int_distribution<int> x(0, W - (int)KNIGHT_SIZE), y(0, H - (int)KNIGHT_SIZE);
+            spots.push_back({(float)x(rng) + KNIGHT_SIZE / 2, (float)y(rng) + KNIGHT_SIZE / 2, kind});
         }
     }
-    Point best{0, 0};
+    EnemySpot best = spots[0];
     float bestDistance = -1;
-    for (Point p : spots)
+    for (const EnemySpot &spot : spots)
     {
         float nearest = 1e9f;
         for (auto &player : players)
         {
             if (player.rect.x >= 0)
-                nearest = std::min(nearest, std::hypot(player.rect.x - p.x, player.rect.y - p.y));
+                nearest = std::min(nearest, std::hypot(player.rect.x + PLAYER_SIZE / 2 - spot.x, player.rect.y + PLAYER_SIZE / 2 - spot.y));
         }
         if (nearest >= 200)
-            return p;
+            return spot;
         if (nearest > bestDistance)
         {
-            best = p;
+            best = spot;
             bestDistance = nearest;
         }
     }
     return best;
+}
+
+void World::addEnemy(int kind, Point middle)
+{
+    if ((int)enemies.size() >= MAX_ENEMIES)
+        return;
+    kind = kind >= 0 && kind < ENEMY_KINDS ? kind : RED_KNIGHT;
+    const EnemyType &type = enemyType(kind);
+    enemies.push_back({{middle.x - type.size / 2, middle.y - type.size / 2, type.size, type.size}, kind, type.health, 0});
 }
 
 void World::seed(const Snapshot &s)
@@ -121,13 +138,17 @@ void World::seed(const Snapshot &s)
     enemies.clear();
     for (auto &e : s.enemies)
     {
-        if ((int)enemies.size() < MAX_ENEMIES)
-            enemies.push_back({e.x, e.y, ENEMY_SIZE, ENEMY_SIZE});
+        if ((int)enemies.size() >= MAX_ENEMIES)
+            break;
+        int kind = e.kind >= 0 && e.kind < ENEMY_KINDS ? e.kind : RED_KNIGHT;
+        const EnemyType &type = enemyType(kind);
+        int health = e.health > 0 ? std::min(e.health, type.health) : type.health;
+        enemies.push_back({{e.x, e.y, type.size, type.size}, kind, health, 0});
     }
     bullets.clear();
     for (auto &b : s.bullets)
         addBullet(b.x, b.y, b.vx, b.vy);
-    started = anyoneAlive(); // a level in progress: its first red knights came out long ago
+    started = anyoneAlive(); // a level in progress: its first bad guys came out long ago
 }
 
 int World::addPlayer()
@@ -193,6 +214,8 @@ void World::addBullet(float x, float y, float vx, float vy)
 void World::step(float dt)
 {
     const Level &map = level();
+    for (auto &e : enemies)
+        e.hurt = std::max(0.0f, e.hurt - dt);
 
     // Bullets fly, and disappear off screen or in a wall
     for (auto it = bullets.begin(); it != bullets.end();)
@@ -207,25 +230,26 @@ void World::step(float dt)
             ++it;
     }
 
-    // A bullet that touches an enemy removes both: +10 points
+    // A bullet that touches a bad guy is used up, and takes one of its hits. The hit that beats it
+    // wins the team its points (10 for a red knight, more for the tougher kinds).
     for (auto b = bullets.begin(); b != bullets.end();)
     {
-        auto e = enemies.begin();
-        while (e != enemies.end() && !checkCollision(b->rect, *e))
-            ++e;
-        if (e != enemies.end())
-        {
-            enemies.erase(e);
-            b = bullets.erase(b);
-            score += 10;
-        }
-        else
+        auto e = std::find_if(enemies.begin(), enemies.end(), [&](const Enemy &enemy) { return checkCollision(b->rect, enemy.rect); });
+        if (e == enemies.end())
         {
             ++b;
+            continue;
+        }
+        b = bullets.erase(b);
+        e->hurt = HURT_TIME;
+        if (--e->health <= 0)
+        {
+            score += enemyType(e->kind).points;
+            enemies.erase(e);
         }
     }
 
-    // A player who touches a coin gets a point. Every 5 points brings an enemy, and enough coins
+    // A player who touches a coin gets a point. Every 5 points brings a bad guy, and enough coins
     // open the doors.
     for (auto &player : players)
     {
@@ -241,8 +265,8 @@ void World::step(float dt)
                 coin.y = spot.y;
                 if (score % POINTS_PER_ENEMY == 0 && (int)enemies.size() < MAX_ENEMIES)
                 {
-                    Point e = randomEnemySpot();
-                    enemies.push_back({e.x, e.y, ENEMY_SIZE, ENEMY_SIZE});
+                    EnemySpot e = randomEnemySpot();
+                    addEnemy(e.kind, {e.x, e.y});
                 }
             }
         }
@@ -278,25 +302,22 @@ void World::step(float dt)
     }
     else if (!started)
     {
-        // Somebody is here, so the level begins and its red knights come out. Every time round
-        // all the maps brings one more.
+        // Somebody is here, so the level begins and its bad guys come out. Every time round all
+        // the maps brings one more.
         started = true;
-        for (Point p : level().enemyStarts)
-        {
-            if ((int)enemies.size() < MAX_ENEMIES)
-                enemies.push_back({p.x - ENEMY_SIZE / 2, p.y - ENEMY_SIZE / 2, ENEMY_SIZE, ENEMY_SIZE});
-        }
+        for (const EnemySpot &e : level().enemyStarts)
+            addEnemy(e.kind, {e.x, e.y});
         int extra = (levelNumber - 1) / (int)levels_->levels.size();
-        for (int i = 0; i < extra && (int)enemies.size() < MAX_ENEMIES; i++)
+        for (int i = 0; i < extra; i++)
         {
-            Point e = randomEnemySpot();
-            enemies.push_back({e.x, e.y, ENEMY_SIZE, ENEMY_SIZE});
+            EnemySpot e = randomEnemySpot();
+            addEnemy(e.kind, {e.x, e.y});
         }
     }
 }
 
-// Enemies walk toward the nearest player who's alive: straight at them when nothing is in the
-// way, and otherwise along the shortest way around the walls.
+// Bad guys walk toward the nearest player who's alive, each at its own speed: straight at them
+// when nothing is in the way, and otherwise along the shortest way around the walls.
 void World::moveEnemies(float dt)
 {
     const Level &map = level();
@@ -312,12 +333,15 @@ void World::moveEnemies(float dt)
 
     for (auto &enemy : enemies)
     {
+        const EnemyType &type = enemyType(enemy.kind);
+        Rect &body = enemy.rect;
+        float half = type.size / 2, middleX = body.x + half, middleY = body.y + half;
         const Rect *target = nullptr;
         float best = 0;
         for (auto &player : players)
         {
             const Rect &p = player.rect;
-            float d = std::hypot(p.x - enemy.x, p.y - enemy.y);
+            float d = std::hypot(p.x + PLAYER_SIZE / 2 - middleX, p.y + PLAYER_SIZE / 2 - middleY);
             if (p.x >= 0 && (!target || d < best))
             {
                 target = &p;
@@ -326,18 +350,27 @@ void World::moveEnemies(float dt)
         }
         if (!target || best <= 0)
             continue;
-        Point goal{target->x, target->y};
-        if (!map.clearPath(enemy, goal))
+        Point goal{target->x + PLAYER_SIZE / 2 - half, target->y + PLAYER_SIZE / 2 - half}; // middle on middle
+        if (!map.clearPath(body, goal))
         {
+            // The way round is worked out for a knight-sized body with the same middle. A bigger one
+            // fits too, since every way through a map is at least 2 cells (64 pixels) wide.
             if (distance.empty())
                 distance = map.distances(playerSpots);
-            int here = map.spotNear(enemy.x, enemy.y);
+            float shift = (type.size - KNIGHT_SIZE) / 2;
+            int here = map.spotNear(body.x + shift, body.y + shift);
             if (here >= 0 && distance[(size_t)here] > 0)
-                goal = map.spotPosition(map.downhill(here, distance));
+            {
+                Point next = map.spotPosition(map.downhill(here, distance));
+                goal = {next.x - shift, next.y - shift};
+            }
         }
-        float dx = goal.x - enemy.x, dy = goal.y - enemy.y, length = std::hypot(dx, dy);
+        float dx = goal.x - body.x, dy = goal.y - body.y, length = std::hypot(dx, dy);
         if (length > 0.01f)
-            map.slide(enemy, dx / length * ENEMY_SPEED * dt, dy / length * ENEMY_SPEED * dt);
+        {
+            float step = std::min(length, type.speed * dt); // no further than the goal: no wobbling on it
+            map.slide(body, dx / length * step, dy / length * step);
+        }
     }
 }
 
@@ -355,7 +388,7 @@ Snapshot World::snapshot(int hostId) const
     for (auto &c : coins)
         s.coins.push_back({c.x, c.y});
     for (auto &e : enemies)
-        s.enemies.push_back({e.x, e.y});
+        s.enemies.push_back({e.rect.x, e.rect.y, e.kind, e.health, e.hurt > 0});
     for (auto &b : bullets)
         s.bullets.push_back({b.rect.x, b.rect.y, b.vx, b.vy});
     return s;
@@ -439,6 +472,9 @@ std::string encodeSnapshot(const Snapshot &s)
     {
         add(msg, e.x);
         add(msg, e.y);
+        add(msg, e.kind);
+        add(msg, e.health);
+        add(msg, e.hurt ? 1 : 0);
     }
 
     add(msg, s.bullets.size());
@@ -489,9 +525,11 @@ bool decodeSnapshot(const std::string &line, Snapshot &out)
         return false;
     for (int i = 0; i < n; i++)
     {
-        Point e;
-        if (!in.number(e.x) || !in.number(e.y))
+        EnemyState e;
+        int hurt = 0;
+        if (!in.number(e.x) || !in.number(e.y) || !in.count(e.kind, ENEMY_KINDS - 1) || !in.count(e.health, 100000) || !in.count(hurt, 1))
             return false;
+        e.hurt = hurt != 0;
         s.enemies.push_back(e);
     }
 

@@ -54,7 +54,7 @@
  <objectgroup id="3" name="doors">
   <object id="1" name="door" x="304" y="160" width="32" height="32">
    <properties>
-    <property name="destination" value="level1"/>
+    <property name="destination" value="level5"/>
    </properties>
   </object>
  </objectgroup>
@@ -73,10 +73,10 @@
   <object id="5" name="knight" x="176" y="80">
    <point/>
   </object>
-  <object id="6" name="knight" x="224" y="176">
+  <object id="6" name="knight" type="brute" x="224" y="176">
    <point/>
   </object>
-  <object id="7" name="knight" x="320" y="128">
+  <object id="7" name="knight" type="champion" x="320" y="128">
    <point/>
   </object>
   <object id="8" name="knight" x="272" y="224">

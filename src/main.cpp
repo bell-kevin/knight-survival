@@ -1,9 +1,11 @@
 // main.cpp - SDL2 Survival Game (Shooting Edition)
-// Objective: Collect yellow coins & Shoot red enemies with Left Click. Enough coins open the door
-//            to the next level (the levels are maps made with Tiled: see maps/README.md).
+// Objective: Collect gold coins & Shoot the bad guys with Left Click. Enough coins open the door
+//            to the next level (the levels are maps made with Tiled: see maps/README.md). Every
+//            kind of bad guy takes its own number of hits and hurts you its own amount (see
+//            enemies.h); when your health runs out, you're out until you jump back in.
 // Controls: WASD/Arrows to move. Mouse Left-Click to shoot. Esc to Quit.
 //           Touch screens: the left thumb stick moves, the right one aims and fires (a quick tap on
-//           it shoots the nearest red knight). You can also drag your knight, and tap the field to
+//           it shoots the nearest bad guy). You can also drag your knight, and tap the field to
 //           shoot there.
 //
 // The field is always 800 x 600 "units", drawn as big as the window or phone allows. On a phone
@@ -50,6 +52,10 @@ const char *const DIRECTIONS[8] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
 const int SOUTH = 4;
 
 const float SPAWN_PROTECTION = 2.0f; // seconds a fresh knight blinks and can't be caught
+const float HIT_PROTECTION = 1.0f;   // ...and after a bad guy hits it, to get away
+const float KNOCKBACK_TIME = 0.2f;   // seconds a hit pushes you back for
+const float KNOCKBACK_SPEED = 420.0f; // how fast that push starts out (it slows down to nothing)
+const float HURT_FLASH = 0.35f;      // seconds the field flashes red when you're hit
 const float RESPAWN_DELAY = 0.75f;   // so a click you meant as a shot doesn't respawn you
 const float BANNER_TIME = 2.5f;      // seconds "LEVEL 2" or "THE DOOR IS OPEN" stays on screen
 const float FIRE_INTERVAL = 0.18f;   // seconds between shots while the fire stick is pushed
@@ -64,6 +70,7 @@ const SDL_Color AROUND{11, 14, 18, 255}; // the screen around the field
 // What the web page around the game says, and the menu it shows (see KnightUI in web/shell.html)
 EM_JS(int, js_game_only, (), { return window.KnightUI && KnightUI.gameOnly() ? 1 : 0; });
 EM_JS(int, js_touch_first, (), { return window.KnightUI && KnightUI.touchFirst() ? 1 : 0; });
+EM_JS(int, js_covered, (), { return window.KnightUI && KnightUI.covered() ? 1 : 0; }); // the menu is over the game
 EM_JS(void, js_open_menu, (), { if (window.KnightUI) KnightUI.openMenu(); });
 #endif
 
@@ -73,6 +80,22 @@ const SDL_Color TINTS[MAX_PLAYERS + 1] = {
     {130, 235, 130, 255}, {255, 175, 80, 255}, {195, 140, 255, 255},
     {100, 225, 255, 255}, {255, 140, 200, 255}, {245, 230, 100, 255},
 };
+
+// The bad guys are all the red knight, recolored: the red of its armor becomes `body`, and for
+// the warlord, the darker reds (its shading and shoulders) become gold `trim`. Alpha 0: keep it.
+struct Armor
+{
+    SDL_Color body, trim;
+};
+const Armor ARMOR[ENEMY_KINDS] = {
+    {{0, 0, 0, 0}, {0, 0, 0, 0}},             // red knight: just as it's drawn
+    {{70, 190, 60, 255}, {0, 0, 0, 0}},       // scout: green
+    {{150, 70, 215, 255}, {0, 0, 0, 0}},      // champion: purple
+    {{215, 120, 30, 255}, {0, 0, 0, 0}},      // brute: bronze
+    {{78, 78, 96, 255}, {225, 170, 30, 255}}, // warlord: black steel and gold
+};
+// What the "LEVEL n" banner calls them
+const char *const CROWD_NAMES[ENEMY_KINDS] = {"RED KNIGHTS", "SCOUTS", "CHAMPIONS", "BRUTES", "THE WARLORD"};
 
 // One knight color, facing all 8 ways
 struct Knight
@@ -115,7 +138,8 @@ struct Game
 {
     SDL_Window *window = nullptr;
     SDL_Renderer *renderer = nullptr;
-    Knight white, blue, red;
+    Knight white, blue;
+    std::array<Knight, ENEMY_KINDS> enemies; // the bad guys, by kind
     std::map<std::string, SDL_Texture *> pictures; // the tile pictures, by file name (in assets/)
     SDL_Texture *wood = nullptr;                   // what a shut door is made of
     SDL_Texture *mapTexture = nullptr;             // the level, drawn once (see drawMap)
@@ -126,7 +150,11 @@ struct Game
     SDL_FRect player{100, 100, PLAYER_SIZE, PLAYER_SIZE};
     int face = SOUTH;
     GameState state = GameState::PLAYING;
+    int health = PLAYER_HEALTH;
     float protection = SPAWN_PROTECTION;
+    float hurtFlash = 0;          // seconds the red flash of a hit still shows
+    float knockTime = 0;          // seconds a hit still pushes us back
+    SDL_FPoint knock{};           // ...this fast at first
     float deadTime = 0;
     int finalScore = 0;
     int shownScore = -1, shownLevel = -1;
@@ -359,6 +387,46 @@ SDL_Texture *loadBMP(SDL_Renderer *renderer, const std::string &path, bool white
     return texture;
 }
 
+// Helper: Load the red knight in another suit of armor (see ARMOR)
+SDL_Texture *loadEnemy(SDL_Renderer *renderer, const std::string &path, const Armor &armor)
+{
+    SDL_Surface *loaded = SDL_LoadBMP(path.c_str());
+    if (!loaded)
+    {
+        SDL_Log("Failed to load BMP: %s", SDL_GetError());
+        return nullptr;
+    }
+    SDL_Surface *surface = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_RGBA32, 0);
+    SDL_FreeSurface(loaded);
+    if (!surface)
+        return nullptr;
+    if (armor.body.a > 0 && SDL_LockSurface(surface) == 0)
+    {
+        for (int y = 0; y < surface->h; y++)
+        {
+            Uint32 *row = (Uint32 *)((Uint8 *)surface->pixels + (size_t)y * (size_t)surface->pitch);
+            for (int x = 0; x < surface->w; x++)
+            {
+                Uint8 r, g, b, a;
+                SDL_GetRGBA(row[x], surface->format, &r, &g, &b, &a);
+                if (r <= 25 || r <= 2 * g || r <= 2 * b)
+                    continue; // not the red armor: the sword, the boots, the outline
+                float light = r / 191.0f; // 1 for the armor's own red, less for its shading
+                bool trim = armor.trim.a > 0 && light < 0.9f;
+                SDL_Color color = trim ? armor.trim : armor.body;
+                float k = trim ? std::min(1.25f, light / 0.71f) : light;
+                auto channel = [k](Uint8 c) { return (Uint8)std::min(255.0f, (float)c * k); };
+                row[x] = SDL_MapRGBA(surface->format, channel(color.r), channel(color.g), channel(color.b), a);
+            }
+        }
+        SDL_UnlockSurface(surface);
+    }
+    SDL_SetColorKey(surface, SDL_TRUE, SDL_MapRGBA(surface->format, 255, 255, 255, 255)); // white is see-through
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, surface);
+    SDL_FreeSurface(surface);
+    return texture;
+}
+
 // Where are the sprites? In the browser they are packed into the game at /assets. Natively we
 // look next to the program, in the current folder and in the source tree it was built from.
 std::string findAssets()
@@ -427,19 +495,147 @@ void drawCentered(SDL_Renderer *renderer, const std::string &text, float y, int 
     drawTextShadowed(renderer, text, W / 2.0f - textWidth(text, scale) / 2, y, scale, color);
 }
 
+// Shapes made of triangles: the thumb sticks, the coins, the warlord's crown
+void fillTriangles(SDL_Renderer *renderer, const std::vector<SDL_FPoint> &corners, SDL_Color color)
+{
+    std::vector<SDL_Vertex> vertices;
+    for (SDL_FPoint p : corners)
+        vertices.push_back({p, color, {0, 0}});
+    SDL_RenderGeometry(renderer, nullptr, vertices.data(), (int)vertices.size(), nullptr, 0);
+}
+
+// A disc from radius `inner` (0: a full disc) out to `outer`, squeezed to `wide` of its width
+// (a coin seen as it turns)
+void fillRing(SDL_Renderer *renderer, SDL_FPoint c, float inner, float outer, SDL_Color color, float wide = 1)
+{
+    const int sides = std::clamp((int)(outer * 2), 16, 48); // small ones look round with fewer
+    const float pi = std::numbers::pi_v<float>;
+    std::vector<SDL_FPoint> corners;
+    for (int i = 0; i < sides; i++)
+    {
+        float a = 2 * pi * (float)i / (float)sides, b = 2 * pi * (float)(i + 1) / (float)sides;
+        SDL_FPoint outA{c.x + outer * wide * std::cos(a), c.y + outer * std::sin(a)}, outB{c.x + outer * wide * std::cos(b), c.y + outer * std::sin(b)};
+        SDL_FPoint inA{c.x + inner * wide * std::cos(a), c.y + inner * std::sin(a)}, inB{c.x + inner * wide * std::cos(b), c.y + inner * std::sin(b)};
+        corners.insert(corners.end(), {outA, outB, inA});
+        if (inner > 0)
+            corners.insert(corners.end(), {inA, outB, inB});
+    }
+    fillTriangles(renderer, corners, color);
+}
+
+// A gold coin, slowly turning. Each one turns at its own moment, so they don't all wink together.
+void drawCoin(SDL_Renderer *renderer, Point coin, float seconds)
+{
+    float r = COIN_SIZE / 2 + 1.5f;
+    SDL_FPoint middle{coin.x + COIN_SIZE / 2, coin.y + COIN_SIZE / 2};
+    float wide = 0.3f + 0.7f * std::fabs(std::cos(seconds * 2.2f + coin.x * 0.031f + coin.y * 0.017f));
+    fillRing(renderer, {middle.x + 1.5f, middle.y + 2}, 0, r, {0, 0, 0, 95}, wide); // its shadow on the floor
+    fillRing(renderer, middle, 0, r, {176, 118, 8, 255}, wide);                      // the rim
+    fillRing(renderer, middle, 0, r * 0.78f, {255, 208, 40, 255}, wide);             // the face
+    fillRing(renderer, middle, r * 0.42f, r * 0.56f, {214, 156, 18, 255}, wide);    // a ring stamped in it
+    if (wide > 0.55f)                                                                // and a glint
+        fillRing(renderer, {middle.x - r * 0.38f * wide, middle.y - r * 0.38f}, 0, r * 0.2f, {255, 250, 215, 255}, wide);
+}
+
+// Your health: a heart and a bar that goes from green to yellow to red as it runs out. `unit` is
+// the size of one pixel of the heart.
+void drawHealth(SDL_Renderer *renderer, int health, float x, float y, float unit)
+{
+    static const char *const HEART[6] = {".##.##.", "#######", "#######", ".#####.", "..###..", "...#..."};
+    float share = std::clamp((float)health / (float)PLAYER_HEALTH, 0.0f, 1.0f);
+    SDL_Color fill = share > 0.6f ? SDL_Color{70, 200, 90, 255} : share > 0.3f ? SDL_Color{240, 200, 40, 255} : SDL_Color{235, 60, 50, 255};
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    for (int shadow = 1; shadow >= 0; shadow--) // its shadow first, like the letters have
+    {
+        float shift = shadow ? std::max(1.0f, unit / 2) : 0;
+        if (shadow)
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 150);
+        else
+            SDL_SetRenderDrawColor(renderer, 235, 60, 70, 255);
+        for (int row = 0; row < 6; row++)
+        {
+            for (int col = 0; col < 7; col++)
+            {
+                SDL_FRect dot{x + (float)col * unit + shift, y + (float)row * unit + shift, unit, unit};
+                if (HEART[row][col] == '#')
+                    SDL_RenderFillRectF(renderer, &dot);
+            }
+        }
+    }
+    SDL_FRect frame{x + 9 * unit, y, 50 * unit, 6 * unit};
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 160);
+    SDL_RenderFillRectF(renderer, &frame);
+    SDL_FRect bar{frame.x + unit / 2, frame.y + unit / 2, (frame.w - unit) * share, frame.h - unit};
+    SDL_SetRenderDrawColor(renderer, fill.r, fill.g, fill.b, 255);
+    SDL_RenderFillRectF(renderer, &bar);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+}
+
+// Over a bad guy that takes more than one hit: how many it has left. The warlord also wears a crown.
+void drawEnemyHealth(SDL_Renderer *renderer, const EnemyState &enemy)
+{
+    const EnemyType &type = enemyType(enemy.kind);
+    if (type.health <= 1)
+        return;
+    float w = std::max(30.0f, type.size * 0.9f), h = enemy.kind == WARLORD ? 6.0f : 4.0f, middleX = enemy.x + type.size / 2;
+    SDL_FRect frame{middleX - w / 2 - 1, enemy.y - h - 7, w + 2, h + 2};
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 180);
+    SDL_RenderFillRectF(renderer, &frame);
+    SDL_FRect bar{frame.x + 1, frame.y + 1, w * std::clamp((float)enemy.health / (float)type.health, 0.0f, 1.0f), h};
+    SDL_SetRenderDrawColor(renderer, 235, 65, 50, 255);
+    SDL_RenderFillRectF(renderer, &bar);
+    if (enemy.kind == WARLORD)
+    {
+        float bottom = frame.y - 3, top = bottom - 12, left = middleX - 12;
+        fillTriangles(renderer, {{left, bottom}, {left + 2, top + 2}, {left + 9, bottom},              // three points
+                                 {middleX - 6, bottom}, {middleX, top - 1}, {middleX + 6, bottom},
+                                 {left + 15, bottom}, {left + 22, top + 2}, {left + 24, bottom}},
+                      GOLD);
+        SDL_FRect band{left, bottom - 4, 24, 5};
+        SDL_SetRenderDrawColor(renderer, 205, 150, 0, 255);
+        SDL_RenderFillRectF(renderer, &band);
+        fillRing(renderer, {middleX, bottom - 1.5f}, 0, 2, {200, 30, 40, 255}); // a ruby
+    }
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+}
+
+// The bad guys a level has, for its banner: "SCOUTS, RED KNIGHTS AND THE WARLORD"
+std::string crowdOf(const Level &level)
+{
+    bool has[ENEMY_KINDS] = {};
+    for (const auto *spots : {&level.enemyStarts, &level.enemySpawns})
+    {
+        for (const EnemySpot &e : *spots)
+            has[std::clamp(e.kind, 0, ENEMY_KINDS - 1)] = true;
+    }
+    if (level.enemySpawns.empty())
+        has[RED_KNIGHT] = true; // newcomers come from anywhere, as red knights
+    std::vector<std::string> names;
+    for (int kind : {SCOUT, RED_KNIGHT, CHAMPION, BRUTE, WARLORD}) // weakest first, the boss last
+    {
+        if (has[kind])
+            names.push_back(CROWD_NAMES[kind]);
+    }
+    std::string list;
+    for (size_t i = 0; i < names.size(); i++)
+        list += (i == 0 ? "" : i + 1 == names.size() ? " AND " : ", ") + names[i];
+    return list;
+}
+
 // Which level a snapshot is in, as a key: "<world>:<level number>:<map>"
 std::string levelKey(const Snapshot &world)
 {
     return std::to_string((long long)world.epoch) + ":" + std::to_string(world.level) + ":" + std::to_string(world.map);
 }
 
-// Somewhere safe to (re)appear: one of the level's entrances, as long as it's away from the red
-// knights and not on top of another player (with everyone starting at the same spot, knights and
+// Somewhere safe to (re)appear: one of the level's entrances, as long as it's away from the bad
+// guys and not on top of another player (with everyone starting at the same spot, knights and
 // their names would pile up). Otherwise the safest place we can find that's reachable.
 //
 // When a new level starts, everybody moves at the same moment, and the others are still where
 // they were on the old map as far as we know. So then each player takes the entrance that goes
-// with their player id instead (and the next one if a red knight is too close to it).
+// with their player id instead (and the next one if a bad guy is too close to it).
 SDL_FPoint safeSpot(const Snapshot &world, int myId, bool newLevel = false)
 {
     const Level &level = builtInLevel(world.map);
@@ -469,8 +665,11 @@ SDL_FPoint safeSpot(const Snapshot &world, int myId, bool newLevel = false)
     for (Point spot : spots)
     {
         float enemyRoom = 1e9f, playerRoom = 1e9f;
-        for (auto &e : world.enemies)
-            enemyRoom = std::min(enemyRoom, getDistance(spot.x, spot.y, e.x, e.y));
+        for (auto &e : world.enemies) // middle to middle
+        {
+            float half = enemyType(e.kind).size / 2;
+            enemyRoom = std::min(enemyRoom, getDistance(spot.x + PLAYER_SIZE / 2, spot.y + PLAYER_SIZE / 2, e.x + half, e.y + half));
+        }
         for (auto &p : world.players)
         {
             if (p.id != myId && p.x >= 0 && !newLevel)
@@ -495,7 +694,9 @@ void respawn(Game &g, bool newLevel = false)
     g.player.x = spot.x;
     g.player.y = spot.y;
     g.state = GameState::PLAYING;
+    g.health = PLAYER_HEALTH; // a fresh start, and every new level, puts you back to full health
     g.protection = SPAWN_PROTECTION;
+    g.knockTime = g.hurtFlash = 0;
     g.dragging = false; // the finger was steering the knight somewhere else
     if (levelKey(world) != g.bannerFor) // a level we haven't been in yet: say which one it is
     {
@@ -533,30 +734,31 @@ bool clearShot(const Level &level, float x0, float y0, float x1, float y1)
     return true;
 }
 
-// A quick tap on the fire stick: shoot the nearest red knight (one that no wall is hiding, if
+// A quick tap on the fire stick: shoot the nearest bad guy (one that no wall is hiding, if
 // there is one), or else straight ahead
 void shootNearest(Game &g)
 {
     const Snapshot &world = g.session->world();
     const Level &level = builtInLevel(world.map);
     float centerX = g.player.x + g.player.w / 2, centerY = g.player.y + g.player.h / 2;
-    const Point *target = nullptr;
-    float best = 0;
+    SDL_FPoint target{};
+    float best = -1;
     bool bestInSight = false;
     for (auto &e : world.enemies)
     {
-        float d = getDistance(centerX, centerY, e.x + ENEMY_SIZE / 2, e.y + ENEMY_SIZE / 2);
-        bool inSight = clearShot(level, centerX, centerY, e.x + ENEMY_SIZE / 2, e.y + ENEMY_SIZE / 2);
-        if (!target || (inSight && !bestInSight) || (inSight == bestInSight && d < best))
+        float half = enemyType(e.kind).size / 2, x = e.x + half, y = e.y + half;
+        float d = getDistance(centerX, centerY, x, y);
+        bool inSight = clearShot(level, centerX, centerY, x, y);
+        if (best < 0 || (inSight && !bestInSight) || (inSight == bestInSight && d < best))
         {
-            target = &e;
+            target = {x, y};
             best = d;
             bestInSight = inSight;
         }
     }
-    if (target)
+    if (best >= 0)
     {
-        shootAt(g, target->x + ENEMY_SIZE / 2, target->y + ENEMY_SIZE / 2);
+        shootAt(g, target.x, target.y);
         return;
     }
     float angle = (float)g.face * std::numbers::pi_v<float> / 4; // 0 = north, clockwise
@@ -666,6 +868,10 @@ void update(Game &g, float deltaTime)
 {
     const Uint8 *keys = SDL_GetKeyboardState(nullptr);
     bool playing = g.state == GameState::PLAYING && !g.session->spectating();
+#ifdef __EMSCRIPTEN__
+    if (playing && js_covered()) // the page's menu (or its "swipe up" layer) is over the game: you can't play,
+        g.protection = std::max(g.protection, 0.5f); // so nothing can hurt you either
+#endif
 
     if (playing)
     {
@@ -712,6 +918,16 @@ void update(Game &g, float deltaTime)
             g.player.x = me.x;
             g.player.y = me.y;
             g.face = facing(moveX, moveY, g.face);
+        }
+
+        if (g.knockTime > 0) // a bad guy's hit pushes us back, slower and slower
+        {
+            float share = g.knockTime / KNOCKBACK_TIME;
+            Rect me{g.player.x, g.player.y, g.player.w, g.player.h};
+            builtInLevel(g.session->world().map).slide(me, g.knock.x * share * deltaTime, g.knock.y * share * deltaTime);
+            g.player.x = me.x;
+            g.player.y = me.y;
+            g.knockTime = std::max(0.0f, g.knockTime - deltaTime);
         }
 
         // The right thumb stick: aim where it points, and keep firing
@@ -763,21 +979,45 @@ void update(Game &g, float deltaTime)
     g.seenCoinsLeft = world.coinsLeft;
     g.levelBanner = std::max(0.0f, g.levelBanner - deltaTime);
     g.doorBanner = std::max(0.0f, g.doorBanner - deltaTime);
+    g.hurtFlash = std::max(0.0f, g.hurtFlash - deltaTime);
 
-    // Enemy Collision: every player checks their own knight, like the original game did
+    // Enemy Collision: every player checks their own knight, like the original game did. A bad
+    // guy that touches you takes its strength off your health and pushes you back, and you get a
+    // moment to get away. When your health runs out, you're out.
     if (playing && g.protection <= 0)
     {
         Rect me{g.player.x, g.player.y, g.player.w, g.player.h};
         for (auto &e : world.enemies)
         {
-            if (checkCollision(me, {e.x, e.y, ENEMY_SIZE, ENEMY_SIZE}))
+            const EnemyType &type = enemyType(e.kind);
+            if (!checkCollision(me, {e.x, e.y, type.size, type.size}))
+                continue;
+            g.health = std::max(0, g.health - type.damage);
+            g.hurtFlash = HURT_FLASH;
+            if (g.health == 0)
             {
                 g.state = GameState::GAME_OVER;
                 g.deadTime = 0;
                 g.finalScore = world.score;
+                g.knockTime = 0;
                 letGoOfEverything(g);
-                break;
             }
+            else
+            {
+                g.protection = HIT_PROTECTION;
+                float dx = me.x + me.w / 2 - (e.x + type.size / 2), dy = me.y + me.h / 2 - (e.y + type.size / 2);
+                float d = std::hypot(dx, dy);
+                if (d < 0.01f) // right on top of us: back off the way we came
+                {
+                    float angle = (float)g.face * std::numbers::pi_v<float> / 4;
+                    dx = -std::sin(angle);
+                    dy = std::cos(angle);
+                    d = 1;
+                }
+                g.knock = {dx / d * KNOCKBACK_SPEED, dy / d * KNOCKBACK_SPEED};
+                g.knockTime = KNOCKBACK_TIME;
+            }
+            break;
         }
     }
 
@@ -969,12 +1209,15 @@ void drawExitSign(SDL_Renderer *renderer, const Door &door)
 }
 
 // Big words in the middle of the screen that fade away: "LEVEL 2", "THE DOOR IS OPEN!"
-void drawBanner(SDL_Renderer *renderer, const std::string &big, const std::string &small, float timeLeft, SDL_Color color)
+void drawBanner(SDL_Renderer *renderer, const std::string &big, const std::string &small, float timeLeft, SDL_Color color,
+                const std::string &smaller = "")
 {
     color.a = (Uint8)(255 * std::clamp(timeLeft / 0.6f, 0.0f, 1.0f));
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
     drawCentered(renderer, big, 205, 6, color);
     drawCentered(renderer, small, 270, 3, {WHITE.r, WHITE.g, WHITE.b, color.a});
+    if (!smaller.empty())
+        drawCentered(renderer, smaller, 310, 2, {LIGHT.r, LIGHT.g, LIGHT.b, color.a});
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 }
 
@@ -993,13 +1236,12 @@ void drawField(Game &g)
     for (const Door &door : level.doors)
         drawDoor(g, door, world.coinsLeft == 0);
 
-    // Draw Coins (Yellow)
-    SDL_SetRenderDrawColor(renderer, 255, 215, 0, 255);
+    // Draw Coins (gold, round, turning)
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+    float seconds = (float)SDL_GetTicks() / 1000.0f;
     for (const auto &coin : world.coins)
-    {
-        SDL_FRect rect{coin.x, coin.y, COIN_SIZE, COIN_SIZE};
-        SDL_RenderFillRectF(renderer, &rect);
-    }
+        drawCoin(renderer, coin, seconds);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 
     // Draw Bullets (Cyan), moved on to where they must be by now (unless that's inside a wall)
     float age = g.session->worldAge();
@@ -1011,26 +1253,36 @@ void drawField(Game &g)
             SDL_RenderFillRectF(renderer, &rect);
     }
 
-    // Draw Enemies (Red Knights), each one facing the player it is chasing
+    // Draw the bad guys, each one facing the player it is chasing, and flashing when a bullet hits it
     for (const auto &enemy : world.enemies)
     {
-        float targetX = enemy.x, targetY = enemy.y + 1, best = 1e9f;
-        auto consider = [&](float x, float y) {
-            float d = getDistance(enemy.x, enemy.y, x, y);
+        float size = enemyType(enemy.kind).size, middleX = enemy.x + size / 2, middleY = enemy.y + size / 2;
+        float targetX = middleX, targetY = middleY + 1, best = 1e9f;
+        auto consider = [&](float x, float y) { // a knight's top-left corner
+            float d = getDistance(middleX, middleY, x + PLAYER_SIZE / 2, y + PLAYER_SIZE / 2);
             if (d < best)
             {
                 best = d;
-                targetX = x;
-                targetY = y;
+                targetX = x + PLAYER_SIZE / 2;
+                targetY = y + PLAYER_SIZE / 2;
             }
         };
         for (auto &[id, r] : g.remotes)
             consider(r.x, r.y);
         if (playing)
             consider(g.player.x, g.player.y);
-        SDL_FRect rect{enemy.x, enemy.y, ENEMY_SIZE, ENEMY_SIZE};
-        drawKnight(renderer, g.red.look[facing(targetX - enemy.x, targetY - enemy.y, SOUTH)], rect, {255, 50, 50, 255});
+        SDL_FRect rect{enemy.x, enemy.y, size, size};
+        SDL_Texture *look = g.enemies[(size_t)std::clamp(enemy.kind, 0, ENEMY_KINDS - 1)].look[facing(targetX - middleX, targetY - middleY, SOUTH)];
+        drawKnight(renderer, look, rect, {255, 50, 50, 255});
+        if (enemy.hurt && look) // drawn again on top, added: it lights up
+        {
+            SDL_SetTextureBlendMode(look, SDL_BLENDMODE_ADD);
+            SDL_RenderCopyF(renderer, look, nullptr, &rect);
+            SDL_SetTextureBlendMode(look, SDL_BLENDMODE_BLEND);
+        }
     }
+    for (const auto &enemy : world.enemies) // their health bars go over everything nearby
+        drawEnemyHealth(renderer, enemy);
 
     // Draw the other players
     for (auto &[id, r] : g.remotes)
@@ -1055,9 +1307,19 @@ void drawField(Game &g)
             drawExitSign(renderer, door);
     }
 
-    // Score in the top left, room and players in the top right
+    if (g.hurtFlash > 0) // a bad guy just hit us
+    {
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(renderer, 255, 0, 0, (Uint8)(100 * g.hurtFlash / HURT_FLASH));
+        SDL_RenderFillRect(renderer, nullptr);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+    }
+
+    // Score and health in the top left, room and players in the top right
     bool team = world.players.size() > 1;
     drawTextShadowed(renderer, (team ? "TEAM SCORE " : "SCORE ") + std::to_string(world.score), 12, 12, 3, WHITE);
+    if (!g.session->spectating())
+        drawHealth(renderer, g.health, 12, 42, 2);
     std::string status = g.session->status();
     float y = 12;
     size_t start = 0;
@@ -1082,7 +1344,11 @@ void drawField(Game &g)
     }
 
     if (g.state == GameState::PLAYING && g.levelBanner > 0)
-        drawBanner(renderer, "LEVEL " + std::to_string(world.level), level.name, g.levelBanner, GOLD);
+    {
+        std::string crowd = crowdOf(level), warning = "WATCH OUT FOR " + crowd;
+        drawBanner(renderer, "LEVEL " + std::to_string(world.level), level.name, g.levelBanner, GOLD,
+                   textWidth(warning, 2) <= W - 24 ? warning : crowd);
+    }
     else if (g.state == GameState::PLAYING && g.doorBanner > 0)
         drawBanner(renderer, "THE DOOR IS OPEN!", "GO THROUGH IT TO THE NEXT LEVEL", g.doorBanner, GOLD);
 
@@ -1098,32 +1364,6 @@ void drawField(Game &g)
         if (g.deadTime > RESPAWN_DELAY)
             drawCentered(renderer, "PRESS ANY KEY OR TAP TO PLAY AGAIN", 360, 2);
     }
-}
-
-// Shapes for the thumb sticks, made of triangles
-void fillTriangles(SDL_Renderer *renderer, const std::vector<SDL_FPoint> &corners, SDL_Color color)
-{
-    std::vector<SDL_Vertex> vertices;
-    for (SDL_FPoint p : corners)
-        vertices.push_back({p, color, {0, 0}});
-    SDL_RenderGeometry(renderer, nullptr, vertices.data(), (int)vertices.size(), nullptr, 0);
-}
-
-// A disc from radius `inner` (0: a full disc) out to `outer`
-void fillRing(SDL_Renderer *renderer, SDL_FPoint c, float inner, float outer, SDL_Color color)
-{
-    const int SIDES = 48;
-    std::vector<SDL_FPoint> corners;
-    for (int i = 0; i < SIDES; i++)
-    {
-        float a = 2 * std::numbers::pi_v<float> * (float)i / SIDES, b = 2 * std::numbers::pi_v<float> * (float)(i + 1) / SIDES;
-        SDL_FPoint outA{c.x + outer * std::cos(a), c.y + outer * std::sin(a)}, outB{c.x + outer * std::cos(b), c.y + outer * std::sin(b)};
-        SDL_FPoint inA{c.x + inner * std::cos(a), c.y + inner * std::sin(a)}, inB{c.x + inner * std::cos(b), c.y + inner * std::sin(b)};
-        corners.insert(corners.end(), {outA, outB, inA});
-        if (inner > 0)
-            corners.insert(corners.end(), {inA, outB, inB});
-    }
-    fillTriangles(renderer, corners, color);
 }
 
 // A thumb stick (fainter while no thumb is on it). The fire stick has a cross-hair on its knob,
@@ -1208,6 +1448,8 @@ void drawScreen(Game &g)
             centered(left > 0 ? std::to_string(left) + (left == 1 ? " COIN" : " COINS") + " TO OPEN THE DOOR" : "THE DOOR IS OPEN", H + 194.0f, 3,
                      left > 0 ? LIGHT : GOLD);
         }
+        if (!g.session->spectating())
+            drawHealth(renderer, g.health, W / 2.0f - 59 * 4 / 2.0f, H + 236.0f, 4); // heart and bar: 59 heart pixels wide
     }
     if (s.beside && below >= 500)
         drawTextShadowed(renderer, "TURN SIDEWAYS FOR A BIGGER VIEW", W / 2.0f - textWidth("TURN SIDEWAYS FOR A BIGGER VIEW", 2) / 2, s.h - 44, 2,
@@ -1277,9 +1519,10 @@ extern "C" EMSCRIPTEN_KEEPALIVE const char *knight_debug_state()
     char screen[512];
     std::snprintf(screen, sizeof(screen),
                   "\"screen\":[%d,%d,%.2f,%.2f],\"sticks\":%s,\"beside\":%s,\"radius\":%.1f,\"move\":[%.1f,%.1f],"
-                  "\"fire\":[%.1f,%.1f],\"menu\":[%.1f,%.1f,%.1f,%.1f]",
+                  "\"fire\":[%.1f,%.1f],\"menu\":[%.1f,%.1f,%.1f,%.1f],\"health\":%d",
                   s.field.x, s.field.y, s.w, s.h, s.sticks ? "true" : "false", s.beside ? "true" : "false", s.radius,
-                  s.moveHome.x, s.moveHome.y, s.fireHome.x, s.fireHome.y, s.menu.x, s.menu.y, s.menu.w, s.menu.h);
+                  s.moveHome.x, s.moveHome.y, s.fireHome.x, s.fireHome.y, s.menu.x, s.menu.y, s.menu.w, s.menu.h,
+                  activeGame->health);
     state = activeGame->session->debugJson();
     state.pop_back(); // its closing brace
     state += std::string(state.size() > 1 ? "," : "") + screen + "}";
@@ -1325,7 +1568,8 @@ int main(int argc, char *argv[])
         std::string dir = DIRECTIONS[d];
         g.white.look[d] = loadBMP(g.renderer, assets + "WhiteKnight/WhiteKnight_" + dir + ".bmp");
         g.blue.look[d] = loadBMP(g.renderer, assets + "BlueKnight/BlueKnight_" + dir + ".bmp");
-        g.red.look[d] = loadBMP(g.renderer, assets + "RedKnight/RedKnight_" + dir + ".bmp");
+        for (int kind = 0; kind < ENEMY_KINDS; kind++)
+            g.enemies[(size_t)kind].look[d] = loadEnemy(g.renderer, assets + "RedKnight/RedKnight_" + dir + ".bmp", ARMOR[kind]);
     }
 
     // The tiles the levels are drawn with, and the wood the doors are made of
@@ -1357,10 +1601,16 @@ int main(int argc, char *argv[])
         frame(g);
 
     g.session.reset();
-    for (Knight *k : {&g.white, &g.blue, &g.red})
+    std::vector<Knight *> knights = {&g.white, &g.blue};
+    for (Knight &k : g.enemies)
+        knights.push_back(&k);
+    for (Knight *k : knights)
     {
         for (SDL_Texture *t : k->look)
-            SDL_DestroyTexture(t);
+        {
+            if (t)
+                SDL_DestroyTexture(t);
+        }
     }
     for (SDL_Texture *t : {g.wood, g.mapTexture})
     {

@@ -36,14 +36,17 @@ static const LevelSet OPEN = [] {
     return set;
 }();
 
-// A small map for tests, drawn as text: '#' wall, '.' floor. 'P' (where players start),
-// 'E' (a red knight) and 'D' (a door) mark the top-left cell of a 2 x 2 spot of floor.
+// A small map for tests, drawn as text: '#' wall, '.' floor. These mark the top-left cell of a
+// 2 x 2 spot of floor: 'P' where players start, 'D' a door, 'N' an enemy spawn point (bringing
+// `spawnKind`), and bad guys there from the start: 'E' a red knight, 'S' a scout, 'C' a
+// champion, 'B' a brute and 'K' the warlord.
 static MapFile drawnMap(const std::string &name, const std::vector<std::string> &rows, int coins = 10,
-                        const std::string &destination = "")
+                        const std::string &destination = "", const std::string &spawnKind = "")
 {
     int cols = (int)rows[0].size(), height = (int)rows.size();
     std::string walls, objects;
     int id = 1;
+    const std::string kinds = "ESCBK"; // in the order of enemies.h
     for (int r = 0; r < height; r++)
     {
         for (int c = 0; c < cols; c++)
@@ -55,9 +58,13 @@ static MapFile drawnMap(const std::string &name, const std::vector<std::string> 
             if (ch == 'P')
                 objects += "<objectgroup name=\"spawn points\"><object id=\"" + std::to_string(id++) + "\" name=\"player\" x=\"" +
                            middleX + "\" y=\"" + middleY + "\"><point/></object></objectgroup>\n";
-            if (ch == 'E')
-                objects += "<objectgroup name=\"enemies\"><object id=\"" + std::to_string(id++) + "\" name=\"knight\" x=\"" +
-                           middleX + "\" y=\"" + middleY + "\"><point/></object></objectgroup>\n";
+            if (ch == 'N')
+                objects += "<objectgroup name=\"spawn points\"><object id=\"" + std::to_string(id++) + "\" name=\"enemy\" type=\"" +
+                           spawnKind + "\" x=\"" + middleX + "\" y=\"" + middleY + "\"><point/></object></objectgroup>\n";
+            if (kinds.find(ch) != std::string::npos)
+                objects += "<objectgroup name=\"enemies\"><object id=\"" + std::to_string(id++) + "\" name=\"knight\" type=\"" +
+                           (ch == 'E' ? "" : ENEMY_TYPES[kinds.find(ch)].name) + "\" x=\"" + middleX + "\" y=\"" + middleY +
+                           "\"><point/></object></objectgroup>\n";
             if (ch == 'D')
                 objects += "<objectgroup name=\"doors\"><object id=\"" + std::to_string(id++) + "\" x=\"" + x + "\" y=\"" + y +
                            "\" width=\"32\" height=\"32\"><properties><property name=\"destination\" value=\"" +
@@ -98,7 +105,7 @@ static void snapshotRoundTrip()
     s.coinsLeft = 4;
     s.players = {{1, 100, 200}, {2, DEAD, DEAD}, {3, 760, 560}};
     s.coins = {{10, 20}, {30, 40}};
-    s.enemies = {{300, 300}};
+    s.enemies = {{300, 300, RED_KNIGHT, 1, false}, {500, 120, BRUTE, 5, true}};
     s.bullets = {{400, 300, 600, 0}, {12, 34, -424, -424}};
 
     Snapshot back;
@@ -109,7 +116,9 @@ static void snapshotRoundTrip()
     CHECK(back.players.size() == 3 && back.players[2].id == 3 && back.players[2].x == 760);
     CHECK(back.players[1].x < 0);
     CHECK(back.coins.size() == 2 && back.coins[1].y == 40);
-    CHECK(back.enemies.size() == 1 && back.enemies[0].x == 300);
+    CHECK(back.enemies.size() == 2 && back.enemies[0].x == 300 && back.enemies[0].kind == RED_KNIGHT && !back.enemies[0].hurt);
+    if (back.enemies.size() == 2)
+        CHECK(back.enemies[1].y == 120 && back.enemies[1].kind == BRUTE && back.enemies[1].health == 5 && back.enemies[1].hurt);
     CHECK(back.bullets.size() == 2 && back.bullets[1].vx == -424);
 }
 
@@ -127,8 +136,15 @@ static void snapshotRejectsGarbage()
     CHECK(!decodeSnapshot("W 1 0 0 0 1 -1 0 0 0 0 0", out));         // negative map
     CHECK(!decodeSnapshot("X 1 0 0 0 1 0 0 0 0 0 0", out));          // not a world at all
     CHECK(!decodeSnapshot("W 1 0 0 0 0 0 0 0", out));                // the format before levels
+    CHECK(!decodeSnapshot("W 1 0 0 0 1 0 0 0 0 1 5 5 0", out));      // a bad guy without kind and health
+    CHECK(!decodeSnapshot("W 1 0 0 0 1 0 0 0 0 1 5 5 0 0", out));    // the format before bad guys had them
+    CHECK(!decodeSnapshot("W 1 0 0 0 1 0 0 0 0 1 5 5 9 1 0 0", out)); // no such kind
+    CHECK(!decodeSnapshot("W 1 0 0 0 1 0 0 0 0 1 5 5 0 1 2 0", out)); // "hurt" is 0 or 1
     CHECK(out.score == 7);                                           // left alone on failure
     CHECK(decodeSnapshot("W 1 0 0 0 1 0 0 0 0 0 0", out) && out.score == 0 && out.level == 1);
+    CHECK(decodeSnapshot("W 1 0 0 0 1 0 0 0 0 1 5 6 4 20 1 0", out) && out.enemies.size() == 1);
+    if (out.enemies.size() == 1)
+        CHECK(out.enemies[0].x == 5 && out.enemies[0].y == 6 && out.enemies[0].kind == WARLORD && out.enemies[0].health == 20 && out.enemies[0].hurt);
 }
 
 static void coinsScoreAndBringEnemies()
@@ -173,14 +189,60 @@ static void enemiesChaseTheLiving()
     World world(1, 1, &OPEN);
     Snapshot seed;
     seed.players = {{1, 100, 300}, {2, DEAD, DEAD}};
-    seed.enemies = {{600, 300}};
+    seed.enemies = {{600, 300}, {600, 304, SCOUT}}; // (a scout is smaller: 4 px lower is the same middle)
     seed.coins = {{700, 50}, {700, 80}, {700, 110}, {700, 140}, {700, 170}};
     world.seed(seed);
     run(world, 1.0f);
     Snapshot s = world.snapshot(0);
-    CHECK(s.enemies.size() == 1);
-    if (!s.enemies.empty())
-        CHECK(std::fabs(s.enemies[0].x - (600 - ENEMY_SPEED)) < 2); // walked ~80 px toward player 1
+    CHECK(s.enemies.size() == 2);
+    if (s.enemies.size() == 2) // each walked toward player 1 at its own speed
+    {
+        CHECK(std::fabs(s.enemies[0].x - (600 - enemyType(RED_KNIGHT).speed)) < 2);
+        CHECK(std::fabs(s.enemies[1].x - (600 - enemyType(SCOUT).speed)) < 2 && std::fabs(s.enemies[1].y - 304) < 1);
+    }
+}
+
+// Tougher bad guys take more hits (flashing each time), keep their wounds when another player
+// takes over the world, and win the team more points
+static void badGuysTakeTheirHits()
+{
+    World world(1, 1, &OPEN);
+    const EnemyType &champion = enemyType(CHAMPION);
+    Snapshot seed;
+    seed.players = {{1, 20, 300}}; // straight ahead of the champion: it walks along the bullets' line
+    seed.enemies = {{500, 300, CHAMPION}};
+    seed.coins = {{700, 50}, {700, 80}, {700, 110}, {700, 140}, {700, 170}};
+    world.seed(seed);
+    CHECK(champion.health >= 2 && world.snapshot(0).enemies[0].health == champion.health);
+
+    world.addBullet(100, 316, BULLET_SPEED, 0);
+    bool flashed = false;
+    for (int i = 0; i < 60 && world.snapshot(0).enemies[0].health == champion.health; i++)
+        world.step(TICK);
+    Snapshot s = world.snapshot(0);
+    flashed = s.enemies[0].hurt;
+    CHECK(s.enemies[0].health == champion.health - 1 && flashed && s.score == 0 && s.bullets.empty());
+    run(world, HURT_TIME + TICK);
+    CHECK(!world.snapshot(0).enemies[0].hurt); // the flash is short
+
+    World next(1, 1, &OPEN); // another player takes over: the champion is still hurt
+    next.seed(world.snapshot(0));
+    CHECK(next.snapshot(0).enemies.size() == 1 && next.snapshot(0).enemies[0].health == champion.health - 1);
+
+    for (int shot = 1; shot < champion.health; shot++)
+    {
+        float y = next.snapshot(0).enemies[0].y + champion.size / 2 - BULLET_SIZE / 2;
+        next.addBullet(next.snapshot(0).enemies[0].x - 150, y, BULLET_SPEED, 0);
+        run(next, 0.4f);
+    }
+    s = next.snapshot(0);
+    CHECK(s.enemies.empty() && s.score == champion.points);
+
+    Snapshot greedy; // a world can't be seeded with bad guys tougher than their kind
+    greedy.players = {{1, 20, 300}};
+    greedy.enemies = {{500, 300, BRUTE, 999}};
+    next.seed(greedy);
+    CHECK(next.snapshot(0).enemies[0].health == enemyType(BRUTE).health);
 }
 
 static void worldResetsOnlyWhenEveryoneIsDead()
@@ -299,7 +361,7 @@ static void tiledMapsAreRead()
   <object id="2" name="player" x="24" y="24">
    <point/>
   </object>
-  <object id="3" name="enemy" x="40" y="24" width="8" height="8">
+  <object id="3" name="enemy" type="Champion" x="40" y="24" width="8" height="8">
    <ellipse/>
   </object>
  </objectgroup>
@@ -307,6 +369,15 @@ static void tiledMapsAreRead()
   <object id="4" name="bat" x="8" y="8">
    <point/>
   </object>
+  <object id="5" name="guard" type="brute" x="24" y="8"><point/></object>
+  <object id="6" class="Scout" x="40" y="8"><point/></object>
+  <object id="7" name="the boss" x="56" y="8">
+   <properties>
+    <property name="kind" value="WarLord"/>
+   </properties>
+   <point/>
+  </object>
+  <object id="8" name="Red Knight" x="8" y="40"><point/></object>
  </objectgroup>
 </map>
 )"},
@@ -344,8 +415,13 @@ static void tiledMapsAreRead()
         CHECK(cave.doors[0].destination == 1); // "LEVEL2.tmx" is level2
     }
     CHECK(cave.playerSpawns.size() == 1 && cave.playerSpawns[0].x == 48 && cave.playerSpawns[0].y == 48);
-    CHECK(cave.enemyStarts.size() == 1 && cave.enemyStarts[0].x == 16 && cave.enemyStarts[0].y == 16);
-    CHECK(cave.enemySpawns.size() == 2 && cave.enemySpawns[0].x == 88 && cave.enemySpawns[0].y == 56);
+    CHECK(cave.enemyStarts.size() == 5 && cave.enemyStarts[0].x == 16 && cave.enemyStarts[0].y == 16);
+    if (cave.enemyStarts.size() == 5) // the kind: its class (type or class), a "kind" property, or its name
+    {
+        CHECK(cave.enemyStarts[0].kind == RED_KNIGHT && cave.enemyStarts[1].kind == BRUTE && cave.enemyStarts[2].kind == SCOUT);
+        CHECK(cave.enemyStarts[3].kind == WARLORD && cave.enemyStarts[4].kind == RED_KNIGHT);
+    }
+    CHECK(cave.enemySpawns.size() == 1 && cave.enemySpawns[0].x == 88 && cave.enemySpawns[0].y == 56 && cave.enemySpawns[0].kind == CHAMPION);
 
     CHECK(set.levels[1].doors.size() == 1 && set.levels[1].doors[0].destination == 2); // no destination: the next level
     CHECK(set.levels[1].name == "level2" && set.levels[1].coins == 10);                  // the defaults
@@ -363,6 +439,7 @@ static void badMapsAreExplained()
         {"f.tmx", head + R"(width="2" height="2"><layer name="walls" width="2" height="2"><data encoding="csv">1,0,0</data></layer></map>)"},
         {"g.tmx", "<map width=\"2\""},
         drawnMap("h.tmx", {"####", "#PD.", "#...", "####"}, 5, "nowhere"),
+        drawnMap("i.tmx", {"######", "#P..N#", "#....#", "######"}, 5, "", "dragon"),
     };
     LevelSet set = loadLevels(files);
     auto mentions = [&](const std::string &file, const std::string &words) {
@@ -378,7 +455,10 @@ static void badMapsAreExplained()
     CHECK(mentions("f.tmx", "3 tiles instead of 4"));
     CHECK(mentions("g.tmx", "ends in the middle"));
     CHECK(mentions("h.tmx", "no such map"));
-    CHECK(set.levels.size() == 1 && set.levels[0].id == "h"); // the one that loads is still played
+    CHECK(mentions("i.tmx", "no bad guy called \"dragon\""));
+    CHECK(set.levels.size() == 2 && set.levels[0].id == "h"); // the ones that load are still played
+    if (set.levels.size() == 2)
+        CHECK(set.levels[1].enemySpawns.size() == 1 && set.levels[1].enemySpawns[0].kind == RED_KNIGHT); // the dragon
 
     LevelSet none = loadLevels({files[0]});
     CHECK(none.levels.size() == 1 && none.levels[0].id == "open-field"); // never nothing to play
@@ -450,11 +530,85 @@ static void enemiesFindTheWayAroundWalls()
         Snapshot s = world.snapshot(0);
         if (s.enemies.empty())
             break;
-        everInWall = everInWall || level.blocked({s.enemies[0].x, s.enemies[0].y, ENEMY_SIZE, ENEMY_SIZE});
+        everInWall = everInWall || level.blocked({s.enemies[0].x, s.enemies[0].y, KNIGHT_SIZE, KNIGHT_SIZE});
         closest = std::min(closest, std::hypot(s.enemies[0].x - me.x, s.enemies[0].y - me.y));
     }
     CHECK(!everInWall);
     CHECK(closest < 5); // it went round the wall (over the top) and got to the player
+}
+
+// Bigger bad guys find their way too, even through passages only 2 cells (64 px) wide
+static void bigBadGuysGetThroughNarrowWays()
+{
+    for (char kind : std::string("BK"))
+    {
+        LevelSet set = loadLevels({drawnMap("zigzag.tmx", {"############",
+                                                           "#P.........#",
+                                                           "#..........#",
+                                                           "########...#",
+                                                           "########...#",
+                                                           "#..........#",
+                                                           "#..........#",
+                                                           "#..#########",
+                                                           "#..#########",
+                                                           "#" + std::string(1, kind) + ".........#",
+                                                           "#..........#",
+                                                           "############"})});
+        CHECK(set.problems.empty());
+        const Level &level = set.levels[0];
+        float size = enemyType(kind == 'B' ? BRUTE : WARLORD).size;
+        World world(1, 1, &set);
+        int id = world.addPlayer();
+        Point me = at(1, 1);
+        world.setPlayerPosition(id, me.x, me.y);
+        world.step(TICK);
+        bool everInWall = false;
+        float closest = 1e9f;
+        for (int i = 0; i < 30 * 60; i++)
+        {
+            world.step(TICK);
+            Snapshot s = world.snapshot(0);
+            if (s.enemies.empty())
+                break;
+            const EnemyState &e = s.enemies[0];
+            everInWall = everInWall || level.blocked({e.x, e.y, size, size});
+            closest = std::min(closest, std::hypot(e.x + size / 2 - (me.x + PLAYER_SIZE / 2), e.y + size / 2 - (me.y + PLAYER_SIZE / 2)));
+        }
+        if (everInWall || closest >= 5)
+            std::printf("the %s got stuck: it came within %.0f px\n", kind == 'B' ? "brute" : "warlord", closest);
+        CHECK(!everInWall && closest < 5); // all the way round, middle to middle
+    }
+}
+
+// New bad guys come out as the kind their spawn point brings
+static void spawnPointsBringTheirKind()
+{
+    LevelSet set = loadLevels({drawnMap("barracks.tmx", {"##############",
+                                                         "#P...........#",
+                                                         "#............#",
+                                                         "#............#",
+                                                         "#............#",
+                                                         "#..........N.#",
+                                                         "#............#",
+                                                         "##############"},
+                                        10, "", "Champion")});
+    CHECK(set.problems.empty() && set.levels[0].enemySpawns.size() == 1 && set.levels[0].enemySpawns[0].kind == CHAMPION);
+    World world(1, 3, &set);
+    int id = world.addPlayer();
+    Point corner = at(1, 1), far{8 * CELL + 8.5f, 5 * CELL + 8.5f};
+    for (int coin = 1; coin <= 5; coin++)
+    {
+        Snapshot s = world.snapshot(0);
+        s.coins = {{corner.x + 12, corner.y + 12}, far, far, far, far}; // just one under the knight
+        world.seed(s);
+        world.setPlayerPosition(id, corner.x, corner.y);
+        world.step(TICK);
+        world.setPlayerPosition(id, DEAD, DEAD); // dead knights don't collect (and no step: no reset)
+    }
+    Snapshot s = world.snapshot(0);
+    CHECK(s.score == 5 && s.enemies.size() == 1);
+    if (s.enemies.size() == 1)
+        CHECK(s.enemies[0].kind == CHAMPION && s.enemies[0].health == enemyType(CHAMPION).health);
 }
 
 static void coinsOnlyWhereKnightsCanGo()
@@ -573,27 +727,31 @@ static void doorsLeadToTheNextLevel()
     CHECK(carried.level == 2 && carried.map == 1 && carried.coinsLeft == 1);
 }
 
-// The maps that ship with the game: every one loads, and everything in it can be reached
+// The maps that ship with the game: every one loads, everything in it can be reached, and the
+// doors take the team through all of them
 static void builtInLevelsArePlayable()
 {
     const LevelSet &set = builtInLevels();
     for (auto &problem : set.problems)
         std::printf("map problem: %s\n", problem.c_str());
     CHECK(set.problems.empty());
-    CHECK(set.levels.size() >= 2);
+    CHECK(set.levels.size() >= 8);
     for (const Level &level : set.levels)
     {
-        auto reachable = [&](Point middle) {
+        auto reachable = [&](Point middle, float size) { // a knight's spot there, and room for this one
             int spot = level.spotNear(middle.x - KNIGHT_SIZE / 2, middle.y - KNIGHT_SIZE / 2);
-            Rect knight{middle.x - KNIGHT_SIZE / 2, middle.y - KNIGHT_SIZE / 2, KNIGHT_SIZE, KNIGHT_SIZE};
-            return spot >= 0 && isOpen(level, spot) && !level.blocked(knight);
+            Rect body{middle.x - size / 2, middle.y - size / 2, size, size};
+            return spot >= 0 && isOpen(level, spot) && !level.blocked(body);
         };
         bool ok = !level.playerSpawns.empty() && !level.doors.empty() && level.name != level.id;
         ok = ok && (int)level.coinCells.size() >= 4 * COIN_COUNT && level.coins > 0;
         for (Point p : level.playerSpawns)
-            ok = ok && reachable(p);
-        for (Point p : level.enemySpawns)
-            ok = ok && reachable(p);
+            ok = ok && reachable(p, PLAYER_SIZE);
+        for (const auto *spots : {&level.enemyStarts, &level.enemySpawns})
+        {
+            for (const EnemySpot &e : *spots)
+                ok = ok && reachable({e.x, e.y}, enemyType(e.kind).size);
+        }
         for (const Door &door : level.doors)
         {
             bool canGetThere = std::any_of(level.open.begin(), level.open.end(), [&](int spot) {
@@ -612,6 +770,18 @@ static void builtInLevelsArePlayable()
             std::printf("FAILED: %s.tmx (\"%s\") is not playable\n", level.id.c_str(), level.name.c_str());
         CHECK(ok);
     }
+
+    // Going through the first door of every level visits them all, in order, and comes back round
+    std::vector<int> visited;
+    for (int map = 0; (int)visited.size() <= (int)set.levels.size() && !set.levels[(size_t)map].doors.empty();)
+    {
+        visited.push_back(map);
+        map = set.levels[(size_t)map].doors[0].destination;
+    }
+    bool inOrder = visited.size() == set.levels.size() + 1 && visited.back() == 0;
+    for (size_t i = 0; inOrder && i < set.levels.size(); i++)
+        inOrder = visited[i] == (int)i;
+    CHECK(inOrder);
 }
 
 int main()
@@ -621,6 +791,9 @@ int main()
     coinsScoreAndBringEnemies();
     bulletsHitEnemies();
     enemiesChaseTheLiving();
+    badGuysTakeTheirHits();
+    bigBadGuysGetThroughNarrowWays();
+    spawnPointsBringTheirKind();
     worldResetsOnlyWhenEveryoneIsDead();
     playersComeAndGo();
     hostMigrationKeepsTheWorld();

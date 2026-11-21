@@ -6,13 +6,18 @@ Nostr relays and WebRTC, the same way people play on the website. They check tha
 - players who open the same room end up in one world, and the oldest world wins,
 - the game carries on (same world, same score) when the host leaves, hides its tab or freezes,
   and a host that comes back steps down instead of bringing back an old copy of the world,
-- coins, red knights, shooting, game over and respawning all work for a guest, over the network,
+- coins, red knights, shooting, losing health, game over and respawning all work for a guest,
+  over the network,
 - collecting a level's coins opens its door, and walking through it takes the whole team to the
-  next level (everybody starting on the new map's floor, not on top of each other),
+  next level (everybody starting on the new map's floor, not on top of each other), where the
+  guest sees its scouts for what they are,
 - touch controls work (drag your knight, tap to shoot),
 - on a phone held upright and sideways, the lobby fits on the screen, the game takes the whole
   screen (and follows when the phone turns), the thumb sticks walk and fire, also both at once,
   and the menu has the invite link,
+- on an iPhone, where no browser can go full screen, the page asks for a swipe up while the
+  browser's bars are showing, the swipe scrolls the page and not the game, and the request goes
+  away (and comes back) with the bars,
 - the landing page loads cleanly and private-room invite links work.
 
 They need Node.js and an internet connection (the relays are public servers on the internet).

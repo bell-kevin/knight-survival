@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "enemies.h" // the kinds of bad guys a map can place
+
 const int W = 800, H = 600;      // size of the playing field in pixels
 const int CELL = 32;             // one map tile on the field: 16 pixel tiles, drawn twice as big
 const float KNIGHT_SIZE = 40.0f; // every knight, white, blue or red, is this big
@@ -48,6 +50,13 @@ struct Door
     int destination = 0;       // the same level, as an index into LevelSet::levels
 };
 
+// Where a bad guy is, or comes from: the middle of it, and which kind (see enemies.h)
+struct EnemySpot
+{
+    float x, y;
+    int kind = RED_KNIGHT;
+};
+
 // One level. The field is a grid of CELL x CELL cells, and a knight needs 2 x 2 free cells to
 // stand: a "spot", known by the number of its top-left cell (row * cols + col).
 struct Level
@@ -62,9 +71,10 @@ struct Level
     std::vector<unsigned char> walls;          // for every cell: 1 if it's solid
 
     std::vector<Door> doors;
-    std::vector<Point> playerSpawns; // where players appear (the middle of the knight)
-    std::vector<Point> enemySpawns;  // where new red knights come from
-    std::vector<Point> enemyStarts;  // red knights already there when the level starts
+    std::vector<Point> playerSpawns;     // where players appear (the middle of the knight)
+    std::vector<EnemySpot> enemySpawns;  // where new bad guys come from, each spot its own kind
+    std::vector<EnemySpot> enemyStarts;  // bad guys already there when the level starts
+    std::vector<std::string> warnings;   // things in the map the game didn't understand
 
     // Worked out by prepare()
     std::vector<unsigned char> standable; // for every spot: does a knight fit there?
@@ -92,7 +102,7 @@ struct Level
 struct LevelSet
 {
     std::vector<Level> levels;         // in the order they are played: by file name, level2 before level10
-    std::vector<std::string> problems; // maps that could not be loaded, and why
+    std::vector<std::string> problems; // maps that could not be loaded (and why), and the levels' warnings
 };
 
 struct MapFile
