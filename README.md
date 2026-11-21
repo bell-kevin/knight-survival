@@ -19,11 +19,17 @@ They are maps made with the free [Tiled](https://www.mapeditor.org/) editor, and
 
 ## How to play
 
-|         | Keyboard and mouse        | Touch screen                  |
-| ------- | ------------------------- | ----------------------------- |
-| Move    | `WASD` or the arrow keys  | Drag your knight              |
-| Shoot   | Left click (aims at the pointer) | Tap where you want to shoot |
-| Respawn | Any key                   | Tap                           |
+|         | Keyboard and mouse        | Phone or tablet                  |
+| ------- | ------------------------- | -------------------------------- |
+| Move    | `WASD` or the arrow keys  | Left thumb stick (or drag your knight) |
+| Shoot   | Left click (aims at the pointer) | Right thumb stick: push it to aim and keep firing, tap it to hit the nearest red knight (or tap the field) |
+| Respawn | Any key                   | Tap                              |
+
+**On a phone or tablet** the game gets the whole screen, with a thumb stick on each side; hold
+it sideways for the biggest view. The menu button has the invite link and the way back to the
+lobby. On Android, pressing Play goes full screen. On iPhone, which doesn't let web pages do
+that, add the game to your home screen (Share, then Add to Home Screen) to play without the
+browser's bars.
 
 **Playing together:** press **Play now** to join the public lobby, or **Create private room** and
 send the invite link to your friends. Up to 8 knights can play in a room. Nobody needs an
@@ -96,7 +102,7 @@ Run the tests with `ctest --test-dir build`. Every push to `main` is built and t
 | [`server/server.cpp`](server/server.cpp) | LAN server for the native game |
 | [`client/client.cpp`](client/client.cpp) | Terminal client for poking at the server |
 | [`src/font.h`](src/font.h) | The tiny pixel font for the score and labels |
-| [`web/`](web/) | The web page, the message relay script and the vendored Trystero library |
+| [`web/`](web/) | The web page (and what makes it a home-screen app), the message relay script and the vendored Trystero library |
 | [`assets/`](assets/) | The knight sprites (8 directions each) and the tiles the levels are made of |
 | [`tests/`](tests/) | Tests for the rules and the message format, and browsers playing together |
 

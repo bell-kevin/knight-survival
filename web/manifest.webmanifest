@@ -1,0 +1,14 @@
+{
+  "name": "Knight Survival",
+  "short_name": "Knights",
+  "description": "A free multiplayer survival shooter. No sign-up, no download.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "background_color": "#11151a",
+  "theme_color": "#11151a",
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"}
+  ]
+}

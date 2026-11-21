@@ -73,11 +73,18 @@ export async function together(players) {
   )
 }
 
-// Game coordinates (800x600) -> page coordinates on the scaled canvas
-export async function toPage(player, x, y) {
+// Screen units (the whole canvas: the field and the space around it, see Screen in src/main.cpp)
+// -> page coordinates
+export async function screenToPage(player, x, y, s) {
   const box = await player.page.locator('#canvas').boundingBox()
-  const k = box.width / 800
-  return [box.x + x * k, box.y + y * k]
+  const [, , width, height] = (s || (await state(player))).screen
+  return [box.x + (x * box.width) / width, box.y + (y * box.height) / height]
+}
+
+// Field coordinates (800x600) -> page coordinates, wherever the game put the field on the canvas
+export async function toPage(player, x, y) {
+  const s = await state(player)
+  return screenToPage(player, s.screen[0] + x, s.screen[1] + y, s)
 }
 
 // Finding the way around the walls of the level in a state, the way the red knights do it

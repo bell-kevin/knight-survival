@@ -25,6 +25,7 @@ public:
     virtual int myId() const = 0;              // our player id, 0 until the host gives us one
     virtual bool spectating() const { return false; } // the room is full: we can only watch
     virtual std::string status() const = 0;    // a few words for the corner of the screen
+    virtual std::string debugJson() const { return "{}"; } // for tests: what this session knows, as JSON
 };
 
 std::unique_ptr<Session> createSession(int argc, char *argv[]);
