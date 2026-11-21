@@ -1,9 +1,12 @@
 // A bot plays as a guest, so every action crosses the network to the host: it collects coins
-// until red knights appear, shoots them, gets caught and respawns. Then a phone tries the touch
-// controls. Usage: node gameplay.mjs [site-url] [screenshot-folder]
+// until red knights appear, shoots them, opens the door and takes everybody through it to level
+// 2, gets caught and respawns. Then a phone tries the touch controls.
+// Usage: node gameplay.mjs [site-url] [screenshot-folder]
 //
 // Copyright (C) 2026 Kevin Bell. SPDX-License-Identifier: GPL-3.0-or-later
-import {check, finish, launch, openPlayer, randomRoom, screenshot, sleep, state, toPage, together, waitFor} from './common.mjs'
+import {
+  check, finish, launch, nearDoor, openPlayer, randomRoom, screenshot, sleep, state, states, toPage, together, waitFor, wayFinder,
+} from './common.mjs'
 
 const browser = await launch()
 const room = randomRoom('play')
@@ -27,8 +30,9 @@ async function steer(p, dx, dy) {
   for (const key of want) if (!held.has(key)) { await p.page.keyboard.down(key); held.add(key) }
 }
 
-// The bot plays like a person: walk to the nearest coin, dodge red knights that get close,
-// shoot the ones in range (if allowed), and press a key to respawn when caught.
+// The bot plays like a person: walk to the nearest coin (finding the way round the walls, and
+// keeping off the open door), dodge red knights that get close, shoot the ones in range (if
+// allowed), and press a key to respawn when caught.
 let biggestJump = 0
 async function play(p, done, {shoot = true, timeout = 60000, onShot} = {}) {
   const end = Date.now() + timeout
@@ -57,9 +61,35 @@ async function play(p, done, {shoot = true, timeout = 60000, onShot} = {}) {
     if (enemy && dist(enemy) < 120) {
       await steer(p, mx - enemy[0], my - enemy[1]) // get away
     } else {
-      const coin = s.coins.map(([x, y]) => [x + 7, y + 7]).sort((a, b) => dist(a) - dist(b))[0]
-      if (coin) await steer(p, coin[0] - mx, coin[1] - my)
+      // Where to stand to pick up each coin (the knight's top-left corner)
+      const keepOut = spot => s.coinsLeft === 0 && nearDoor(s, spot, 8)
+      const spots = s.coins.map(([x, y]) => [x - 12, y - 12]).filter(spot => !keepOut(spot))
+      const coin = spots.sort((a, b) => dist([a[0] + 20, a[1] + 20]) - dist([b[0] + 20, b[1] + 20]))[0]
+      if (coin) {
+        const [wx, wy] = wayFinder(s).next(s.me, coin, keepOut)
+        await steer(p, wx - s.me[0], wy - s.me[1])
+      }
     }
+    await sleep(60)
+  }
+  await steer(p, 0, 0)
+  return state(p)
+}
+
+// Walks (finding the way) toward where(state) until done(state)
+async function walkTo(p, where, done, timeout = 30000) {
+  const end = Date.now() + timeout
+  while (Date.now() < end) {
+    const s = await state(p)
+    if (done(s)) break
+    if (s.me[0] < 0) {
+      await steer(p, 0, 0)
+      await sleep(900)
+      await p.page.keyboard.press('Space')
+      continue
+    }
+    const [wx, wy] = wayFinder(s).next(s.me, where(s))
+    await steer(p, wx - s.me[0], wy - s.me[1])
     await sleep(60)
   }
   await steer(p, 0, 0)
@@ -83,21 +113,30 @@ const picture = async () => {
 s = await play(B, x => x.score >= 30 && biggestJump >= 10, {onShot: picture, timeout: 90000})
 check(biggestJump >= 10, `shooting a red knight is worth 10 (score ${s.score})`)
 
+// Enough coins open the door, and walking through it takes the whole team to level 2
+s = await play(B, x => x.coinsLeft === 0, {timeout: 90000})
+check(s.coinsLeft === 0 && s.level === 1, `collecting the level's coins opens the door (score ${s.score})`)
+await sleep(300)
+await screenshot(B.page.locator('#canvas'), 'gameplay-door-open')
+const [doorX, doorY, doorW, doorH] = s.doors[0]
+s = await walkTo(B, () => [doorX + doorW / 2 - 20, doorY + doorH / 2 - 20], x => x.level === 2)
+check(s.level === 2, 'walking through the open door starts level 2')
+check(await waitFor('everybody on level 2', async () => (await states([A, B, C])).every(x => x.level === 2 && x.map === 1), 5000),
+  'the whole team goes to level 2 together')
+check(await waitFor('knights moved to the new map', async () => {
+  const all = await states([A, B, C])
+  return all[1].me[0] >= 0 && all.every(x => x.me[0] < 0 || !wayFinder(x).inWall(x.me))
+}, 5000), 'every knight starts level 2 on its floor (none left inside a wall)')
+const alive = (await states([A, B, C])).filter(x => x.me[0] >= 0).map(x => x.me)
+check(alive.every((p, i) => alive.every((q, j) => i === j || Math.hypot(p[0] - q[0], p[1] - q[1]) >= 40)),
+  `nobody starts level 2 on top of somebody else (${alive.map(p => `[${p}]`).join(' ')})`)
+await sleep(800)
+await screenshot(B.page.locator('#canvas'), 'gameplay-level-2')
+
 // Walk into a red knight on purpose: game over, then any key brings us back
 await play(B, x => x.enemies.length > 0, {shoot: false})
-let caught = false
-const deadline = Date.now() + 20000
-while (Date.now() < deadline) {
-  s = await state(B)
-  if (s.me[0] < 0) {
-    caught = true
-    break
-  }
-  const e = s.enemies[0]
-  if (e) await steer(B, e[0] - s.me[0], e[1] - s.me[1])
-  await sleep(60)
-}
-await steer(B, 0, 0)
+s = await walkTo(B, x => x.enemies[0] || x.me, x => x.me[0] < 0, 30000)
+const caught = s.me[0] < 0
 check(caught, 'touching a red knight ends your run')
 await sleep(400)
 await screenshot(B.page.locator('#canvas'), 'gameplay-game-over')
@@ -129,7 +168,7 @@ check(moved.me[0] >= 0 && Math.abs(moved.me[0] - start.me[0]) > 150, `dragging t
 const [tx, ty] = await toPage(touch, 400, moved.me[1] > 300 ? 100 : 500)
 await cdp.send('Input.dispatchTouchEvent', {type: 'touchStart', touchPoints: [{x: tx, y: ty}]})
 await cdp.send('Input.dispatchTouchEvent', {type: 'touchEnd', touchPoints: []})
-check(await waitFor('a bullet flies', async () => (await state(touch)).bullets > 0, 2000), 'tapping away from the knight shoots')
+check(await waitFor('a shot is fired', async () => (await state(touch)).shots > moved.shots, 2000), 'tapping away from the knight shoots')
 check(Math.abs((await state(touch)).me[0] - moved.me[0]) < 5, 'the tap did not drag the knight')
 
 await browser.close()

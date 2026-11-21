@@ -25,8 +25,24 @@ endif()
 
 set(WARNINGS -Wall -Wextra)
 
+# The levels: every Tiled map in maps/ (and the tilesets they use) is compiled into the game, so
+# the server, the native game and the web game all play the same levels. Editing or adding a map
+# makes the next build pick it up.
+file(GLOB LEVEL_FILES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/maps/*.tmx ${CMAKE_SOURCE_DIR}/maps/*.tsx)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${LEVEL_FILES})
+set(LEVELS_SOURCE "// Made by CMake from the files in maps/: edit those, not this.\n#include \"level.h\"\n\n")
+string(APPEND LEVELS_SOURCE "const std::vector<MapFile> &builtInMapFiles()\n{\n    static const std::vector<MapFile> files = {\n")
+foreach(LEVEL_FILE ${LEVEL_FILES})
+    get_filename_component(LEVEL_NAME ${LEVEL_FILE} NAME)
+    file(READ ${LEVEL_FILE} LEVEL_TEXT)
+    string(APPEND LEVELS_SOURCE "        {\"${LEVEL_NAME}\", R\"knightmap(${LEVEL_TEXT})knightmap\"},\n")
+endforeach()
+string(APPEND LEVELS_SOURCE "    };\n    return files;\n}\n")
+file(WRITE ${CMAKE_BINARY_DIR}/levels.cpp.new "${LEVELS_SOURCE}")
+configure_file(${CMAKE_BINARY_DIR}/levels.cpp.new ${CMAKE_BINARY_DIR}/levels.cpp COPYONLY) # only touched when it changes
+
 # The game rules, shared by the server, the native game and the web game
-add_library(world STATIC src/world.cpp)
+add_library(world STATIC src/world.cpp src/level.cpp ${CMAKE_BINARY_DIR}/levels.cpp)
 target_include_directories(world PUBLIC src)
 target_compile_options(world PRIVATE ${WARNINGS})
 
@@ -51,11 +67,12 @@ if(EMSCRIPTEN)
         -sINVOKE_RUN=0                                  # the page starts the game when you press Play
         -sEXPORTED_RUNTIME_METHODS=callMain,ccall
         "SHELL:--shell-file \"${WEB_DIR}/shell.html\""
-        # Pack the knight sprites into the game (only the .bmp files)
-        "SHELL:--embed-file \"${ASSETS}/WhiteKnight@/assets/WhiteKnight\""
-        "SHELL:--embed-file \"${ASSETS}/BlueKnight@/assets/BlueKnight\""
-        "SHELL:--embed-file \"${ASSETS}/RedKnight@/assets/RedKnight\""
+        # Pack the sprites and tiles into the game (only the .bmp files)
+        "SHELL:--embed-file \"${ASSETS}@/assets\""
         "SHELL:--exclude-file *.h")
+    # Rebuild when a picture changes
+    file(GLOB_RECURSE ASSET_FILES CONFIGURE_DEPENDS ${ASSETS}/*.bmp)
+    set_property(TARGET knight-survival APPEND PROPERTY LINK_DEPENDS ${ASSET_FILES})
 
     # Everything else the page needs goes next to it
     add_custom_command(TARGET knight-survival POST_BUILD

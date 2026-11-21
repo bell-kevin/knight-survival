@@ -11,8 +11,23 @@
 #include <utility>
 #include <vector>
 
-World::World(double epoch, unsigned seed) : epoch_(epoch), rng(seed)
+World::World(double epoch, unsigned seed, const LevelSet *levels)
+    : epoch_(epoch), rng(seed), levels_(levels && !levels->levels.empty() ? levels : &builtInLevels())
 {
+    startLevel(1, 0);
+}
+
+// A fresh level: the coins move to the new map, and the red knights and bullets of the old one
+// are gone. The new level's own red knights come out once somebody is there (see step).
+void World::startLevel(int number, int map)
+{
+    levelNumber = std::max(1, number);
+    mapIndex = map >= 0 && map < (int)levels_->levels.size() ? map : 0;
+    coinsLeft = level().coins;
+    started = false;
+    enemies.clear();
+    bullets.clear();
+    coins.clear();
     for (int i = 0; i < COIN_COUNT; i++)
     {
         Point p = randomCoinSpot();
@@ -20,23 +35,52 @@ World::World(double epoch, unsigned seed) : epoch_(epoch), rng(seed)
     }
 }
 
-Point World::randomCoinSpot()
+bool World::anyoneAlive() const
 {
-    std::uniform_int_distribution<int> x(0, W - 21), y(50, H - 21); // y from 50: not under the score
-
-    return {(float)x(rng), (float)y(rng)};
+    return std::any_of(players.begin(), players.end(), [](const Player &p) { return p.rect.x >= 0; });
 }
 
-// Somewhere on the field, but not right on top of a player: try a few spots and keep the
-// one farthest from everybody.
+// In the middle of a floor cell that a knight can get to
+Point World::randomCoinSpot()
+{
+    const Level &map = level();
+    if (map.coinCells.empty()) // a map without any floor: anywhere, like the original game
+    {
+        std::uniform_int_distribution<int> x(0, W - 21), y(50, H - 21); // y from 50: not under the score
+        return {(float)x(rng), (float)y(rng)};
+    }
+    std::uniform_int_distribution<size_t> pick(0, map.coinCells.size() - 1);
+    int cell = map.coinCells[pick(rng)];
+    float margin = (CELL - COIN_SIZE) / 2;
+    return {(float)(cell % map.cols * CELL) + margin, (float)(cell / map.cols * CELL) + margin};
+}
+
+// Where the map says red knights come from (or else anywhere players can get to), but not
+// right on top of a player: the first spot that's far from everybody, or else the farthest.
 Point World::randomEnemySpot()
 {
-    std::uniform_int_distribution<int> x(0, W - (int)ENEMY_SIZE), y(0, H - (int)ENEMY_SIZE);
-    Point best{0, 0};
-    float bestDistance = -1;
+    const Level &map = level();
+    std::vector<Point> spots;
+    for (Point p : map.enemySpawns)
+        spots.push_back({p.x - ENEMY_SIZE / 2, p.y - ENEMY_SIZE / 2});
+    std::shuffle(spots.begin(), spots.end(), rng);
     for (int tries = 0; tries < 20; tries++)
     {
-        Point p{(float)x(rng), (float)y(rng)};
+        if (!map.open.empty())
+        {
+            std::uniform_int_distribution<size_t> pick(0, map.open.size() - 1);
+            spots.push_back(map.spotPosition(map.open[pick(rng)]));
+        }
+        else
+        {
+            std::uniform_int_distribution<int> x(0, W - (int)ENEMY_SIZE), y(0, H - (int)ENEMY_SIZE);
+            spots.push_back({(float)x(rng), (float)y(rng)});
+        }
+    }
+    Point best{0, 0};
+    float bestDistance = -1;
+    for (Point p : spots)
+    {
         float nearest = 1e9f;
         for (auto &player : players)
         {
@@ -57,6 +101,9 @@ Point World::randomEnemySpot()
 void World::seed(const Snapshot &s)
 {
     score = s.score;
+    levelNumber = std::max(1, s.level);
+    mapIndex = s.map >= 0 && s.map < (int)levels_->levels.size() ? s.map : 0;
+    coinsLeft = std::max(0, s.coinsLeft);
     players.clear();
     for (auto &p : s.players)
     {
@@ -80,6 +127,7 @@ void World::seed(const Snapshot &s)
     bullets.clear();
     for (auto &b : s.bullets)
         addBullet(b.x, b.y, b.vx, b.vy);
+    started = anyoneAlive(); // a level in progress: its first red knights came out long ago
 }
 
 int World::addPlayer()
@@ -144,12 +192,16 @@ void World::addBullet(float x, float y, float vx, float vy)
 
 void World::step(float dt)
 {
-    // Bullets fly, and disappear off screen
+    const Level &map = level();
+
+    // Bullets fly, and disappear off screen or in a wall
     for (auto it = bullets.begin(); it != bullets.end();)
     {
         it->rect.x += it->vx * dt;
         it->rect.y += it->vy * dt;
-        if (it->rect.x < 0 || it->rect.x > W || it->rect.y < 0 || it->rect.y > H)
+        float middleX = it->rect.x + BULLET_SIZE / 2, middleY = it->rect.y + BULLET_SIZE / 2;
+        bool offScreen = it->rect.x < 0 || it->rect.x > W || it->rect.y < 0 || it->rect.y > H;
+        if (offScreen || map.wall((int)std::floor(middleX / CELL), (int)std::floor(middleY / CELL)))
             it = bullets.erase(it);
         else
             ++it;
@@ -173,7 +225,8 @@ void World::step(float dt)
         }
     }
 
-    // A player who touches a coin gets a point. Every 5 points brings an enemy.
+    // A player who touches a coin gets a point. Every 5 points brings an enemy, and enough coins
+    // open the doors.
     for (auto &player : players)
     {
         for (auto &coin : coins)
@@ -181,6 +234,8 @@ void World::step(float dt)
             if (checkCollision(player.rect, coin))
             {
                 score++;
+                if (coinsLeft > 0)
+                    coinsLeft--;
                 Point spot = randomCoinSpot();
                 coin.x = spot.x;
                 coin.y = spot.y;
@@ -193,7 +248,68 @@ void World::step(float dt)
         }
     }
 
-    // Enemies walk toward the nearest player who's alive
+    moveEnemies(dt);
+
+    // Somebody walked through an open door: everybody goes on to the level behind it
+    if (coinsLeft == 0)
+    {
+        for (const Door &door : map.doors)
+        {
+            if (std::any_of(players.begin(), players.end(),
+                            [&](const Player &p) { return p.rect.x >= 0 && checkCollision(p.rect, door.area); }))
+            {
+                startLevel(levelNumber + 1, door.destination);
+                break;
+            }
+        }
+    }
+
+    // If nobody is alive, start the world over from the first level. (The original checked this
+    // inside the enemy loop, so it could reset the world while another player was still alive.)
+    if (!anyoneAlive())
+    {
+        if (levelNumber != 1 || mapIndex != 0)
+            startLevel(1, 0);
+        score = 0;
+        coinsLeft = level().coins;
+        started = false;
+        enemies.clear();
+        bullets.clear();
+    }
+    else if (!started)
+    {
+        // Somebody is here, so the level begins and its red knights come out. Every time round
+        // all the maps brings one more.
+        started = true;
+        for (Point p : level().enemyStarts)
+        {
+            if ((int)enemies.size() < MAX_ENEMIES)
+                enemies.push_back({p.x - ENEMY_SIZE / 2, p.y - ENEMY_SIZE / 2, ENEMY_SIZE, ENEMY_SIZE});
+        }
+        int extra = (levelNumber - 1) / (int)levels_->levels.size();
+        for (int i = 0; i < extra && (int)enemies.size() < MAX_ENEMIES; i++)
+        {
+            Point e = randomEnemySpot();
+            enemies.push_back({e.x, e.y, ENEMY_SIZE, ENEMY_SIZE});
+        }
+    }
+}
+
+// Enemies walk toward the nearest player who's alive: straight at them when nothing is in the
+// way, and otherwise along the shortest way around the walls.
+void World::moveEnemies(float dt)
+{
+    const Level &map = level();
+    std::vector<int> playerSpots;
+    for (auto &player : players)
+    {
+        if (player.rect.x >= 0)
+            playerSpots.push_back(map.spotNear(player.rect.x, player.rect.y));
+    }
+    if (playerSpots.empty())
+        return;
+    std::vector<int> distance; // how far every spot is from a player, worked out when needed
+
     for (auto &enemy : enemies)
     {
         const Rect *target = nullptr;
@@ -208,21 +324,20 @@ void World::step(float dt)
                 best = d;
             }
         }
-        if (target && best > 0)
+        if (!target || best <= 0)
+            continue;
+        Point goal{target->x, target->y};
+        if (!map.clearPath(enemy, goal))
         {
-            enemy.x += (target->x - enemy.x) / best * ENEMY_SPEED * dt;
-            enemy.y += (target->y - enemy.y) / best * ENEMY_SPEED * dt;
+            if (distance.empty())
+                distance = map.distances(playerSpots);
+            int here = map.spotNear(enemy.x, enemy.y);
+            if (here >= 0 && distance[(size_t)here] > 0)
+                goal = map.spotPosition(map.downhill(here, distance));
         }
-    }
-
-    // If nobody is alive, start the world over. (The original checked this inside the loop
-    // above, so it could reset the world while another player was still alive.)
-    bool anyoneAlive = std::any_of(players.begin(), players.end(), [](const Player &p) { return p.rect.x >= 0; });
-    if (!anyoneAlive)
-    {
-        score = 0;
-        enemies.clear();
-        bullets.clear();
+        float dx = goal.x - enemy.x, dy = goal.y - enemy.y, length = std::hypot(dx, dy);
+        if (length > 0.01f)
+            map.slide(enemy, dx / length * ENEMY_SPEED * dt, dy / length * ENEMY_SPEED * dt);
     }
 }
 
@@ -232,6 +347,9 @@ Snapshot World::snapshot(int hostId) const
     s.epoch = epoch_;
     s.hostId = hostId;
     s.score = score;
+    s.level = levelNumber;
+    s.map = mapIndex;
+    s.coinsLeft = coinsLeft;
     for (auto &p : players)
         s.players.push_back({p.id, p.rect.x, p.rect.y});
     for (auto &c : coins)
@@ -297,6 +415,9 @@ std::string encodeSnapshot(const Snapshot &s)
     add(msg, s.generation);
     add(msg, s.hostId);
     add(msg, s.score);
+    add(msg, s.level);
+    add(msg, s.map);
+    add(msg, s.coinsLeft);
 
     add(msg, s.players.size());
     for (auto &p : s.players)
@@ -340,7 +461,8 @@ bool decodeSnapshot(const std::string &line, Snapshot &out)
     int n = 0;
 
     if (!in.number(s.epoch) || !in.count(s.generation, 1000000000) || !in.count(s.hostId, 1000000) ||
-        !in.count(s.score, 1000000000))
+        !in.count(s.score, 1000000000) || !in.count(s.level, 1000000000) || !in.count(s.map, 100000) ||
+        !in.count(s.coinsLeft, 1000000))
         return false;
 
     if (!in.count(n, MAX_PLAYERS * 4))

@@ -157,6 +157,7 @@ public:
 
     void sendBullet(float x, float y, float vx, float vy) override
     {
+        shots++;
         if (hosting())
         {
             world_->addBullet(x, y, vx, vy);
@@ -196,14 +197,34 @@ public:
             return out + "]";
         };
         int alive = (int)std::count_if(snap.players.begin(), snap.players.end(), [](const PlayerState &p) { return p.x >= 0; });
-        char head[380];
+        char head[512];
         std::snprintf(head, sizeof(head),
                       "{\"role\":\"%s\",\"myId\":%d,\"epoch\":%.0f,\"gen\":%d,\"hostId\":%d,\"hostPeer\":\"%s\","
-                      "\"peers\":%d,\"players\":%d,\"alive\":%d,\"score\":%d,\"bullets\":%d,\"full\":%s,\"me\":[%d,%d],",
+                      "\"peers\":%d,\"players\":%d,\"alive\":%d,\"score\":%d,\"bullets\":%d,\"shots\":%d,\"full\":%s,"
+                      "\"me\":[%d,%d],\"level\":%d,\"map\":%d,\"coinsLeft\":%d,",
                       hosting() ? "host" : (hostPeer.empty() ? "searching" : "guest"), myPid, snap.epoch,
                       snap.generation, snap.hostId, hostPeer.c_str(), (int)peers.size(), (int)snap.players.size(),
-                      alive, snap.score, (int)snap.bullets.size(), full ? "true" : "false", (int)myX, (int)myY);
-        return std::string(head) + "\"coins\":" + points(snap.coins) + ",\"enemies\":" + points(snap.enemies) + "}";
+                      alive, snap.score, (int)snap.bullets.size(), shots, full ? "true" : "false", (int)myX, (int)myY,
+                      snap.level, snap.map, snap.coinsLeft);
+
+        // The map, so a test can find its way: one string per row, '#' for wall, '.' for floor
+        const Level &level = builtInLevel(snap.map);
+        std::string walls = "[", doors = "[";
+        for (int row = 0; row < level.rows; row++)
+        {
+            walls += row ? ",\"" : "\"";
+            for (int col = 0; col < level.cols; col++)
+                walls += level.wall(col, row) ? '#' : '.';
+            walls += '"';
+        }
+        for (const Door &d : level.doors)
+        {
+            doors += doors.size() > 1 ? ",[" : "[";
+            doors += std::to_string((int)d.area.x) + "," + std::to_string((int)d.area.y) + "," + std::to_string((int)d.area.w) +
+                     "," + std::to_string((int)d.area.h) + "]";
+        }
+        return std::string(head) + "\"coins\":" + points(snap.coins) + ",\"enemies\":" + points(snap.enemies) +
+               ",\"walls\":" + walls + "],\"doors\":" + doors + "]}";
     }
 
 private:
@@ -497,6 +518,7 @@ private:
     int myPid = 0;
     float myX = DEAD, myY = DEAD;
     float sendTimer = 0;
+    int shots = 0; // how many times we fired (for the tests)
 
     // While hosting
     std::unique_ptr<World> world_;

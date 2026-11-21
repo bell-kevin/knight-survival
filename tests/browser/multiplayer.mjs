@@ -21,16 +21,16 @@ let all = await states([A, B, C])
 const epoch = all[0].epoch
 check(all[0].role === 'host', 'the oldest world (A) won')
 
-// B walks diagonally for a second; everybody should see it
+// B walks diagonally toward the middle of the level for a second; everybody should see it
 await B.page.click('#canvas', {position: {x: 5, y: 5}})
 const before = (await state(B)).me
-await B.page.keyboard.down('d')
-await B.page.keyboard.down('s')
+const keys = [before[0] < 380 ? 'd' : 'a', before[1] < 280 ? 's' : 'w']
+for (const key of keys) await B.page.keyboard.down(key)
 await sleep(1000)
-await B.page.keyboard.up('d')
-await B.page.keyboard.up('s')
+for (const key of keys) await B.page.keyboard.up(key)
 const after = (await state(B)).me
-check(after[0] > before[0] && after[1] > before[1], `B moved (${before} -> ${after})`)
+const went = (from, to, key) => (key === 'd' || key === 's' ? to > from : to < from)
+check(went(before[0], after[0], keys[0]) && went(before[1], after[1], keys[1]), `B moved (${before} -> ${after})`)
 await sleep(500)
 await screenshot(A.page, 'multiplayer-host-view')
 await screenshot(B.page, 'multiplayer-guest-view')

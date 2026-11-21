@@ -5,11 +5,17 @@ friends: no sign-up, no download, no game server.
 
 ### ▶ [Play now: bell-kevin.github.io/knight-survival](https://bell-kevin.github.io/knight-survival/)
 
-![Three knights, a red knight and a bullet in flight in the web version](screenshotsGIFS/web-multiplayer.png)
+![Three knights on the first level, The Mossy Cellar: a bullet flies at a red knight, and the open door glows on the right](screenshotsGIFS/web-multiplayer.png)
 
 Collect the yellow coins, shoot the red knights, and stay alive. Every coin is a point for the
-whole team, every 5 points another red knight shows up, and shooting one is worth 10. Touch a
-red knight and you're out until you jump back in. If everybody is out, the world starts over.
+whole team, every 5 points another red knight shows up, and shooting one is worth 10. Collect
+enough coins and the level's door opens: walk through it and the whole team goes on to the next
+level. Touch a red knight and you're out until you jump back in. If everybody is out, the world
+starts over at level 1.
+
+There are four levels, and after the last one the first comes round again with more red knights.
+They are maps made with the free [Tiled](https://www.mapeditor.org/) editor, and you can
+[make your own](maps/README.md).
 
 ## How to play
 
@@ -82,25 +88,27 @@ Run the tests with `ctest --test-dir build`. Every push to `main` is built and t
 | Path | What it is |
 | ---- | ---------- |
 | [`src/main.cpp`](src/main.cpp) | The game: input, movement, drawing |
-| [`src/world.cpp`](src/world.cpp) | The rules: coins, red knights, bullets, score |
+| [`src/world.cpp`](src/world.cpp) | The rules: coins, red knights, bullets, score, doors and levels |
+| [`src/level.cpp`](src/level.cpp) | Reads the level maps, and finds the way around their walls |
+| [`maps/`](maps/) | The levels, made with Tiled ([how to make one](maps/README.md)) |
 | [`src/session_web.cpp`](src/session_web.cpp) | Online play in the browser: hosting, joining, host hand-over |
 | [`src/session_native.cpp`](src/session_native.cpp), [`src/net.h`](src/net.h) | Native play: TCP client, or solo |
 | [`server/server.cpp`](server/server.cpp) | LAN server for the native game |
 | [`client/client.cpp`](client/client.cpp) | Terminal client for poking at the server |
 | [`src/font.h`](src/font.h) | The tiny pixel font for the score and labels |
 | [`web/`](web/) | The web page, the message relay script and the vendored Trystero library |
-| [`assets/`](assets/) | The knight sprites (8 directions each) |
+| [`assets/`](assets/) | The knight sprites (8 directions each) and the tiles the levels are made of |
 | [`tests/`](tests/) | Tests for the rules and the message format, and browsers playing together |
 
 ## Free software
 
 Knight Survival is free software: you can use, study, share and change it under the terms of
-the [GNU General Public License, version 3 or later](LICENSE). That covers the code and the art
-in this repository, except for the files in [`web/vendor`](web/vendor), which keep their own
-MIT licenses.
+the [GNU General Public License, version 3 or later](LICENSE). That covers the code, the art and
+the levels in this repository, except for the files in [`web/vendor`](web/vendor), which keep
+their own MIT licenses.
 
 Everything it is built with is free software too: SDL2 (zlib), Emscripten (MIT/NCSA),
-Trystero and noble-secp256k1 (MIT), CMake (BSD). The page loads nothing from other websites:
+Trystero and noble-secp256k1 (MIT), CMake (BSD), and the levels are drawn with Tiled (GPL). The page loads nothing from other websites:
 everything comes from this repository, apart from the connections to other players, the Nostr
 relays that introduce them, and the STUN servers that help them connect through home routers.
 
