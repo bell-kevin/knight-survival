@@ -79,3 +79,64 @@ export async function toPage(player, x, y) {
   const k = box.width / 800
   return [box.x + x * k, box.y + y * k]
 }
+
+// Finding the way around the walls of the level in a state, the way the red knights do it
+// (src/level.cpp): a knight needs 2 x 2 free cells of 32 px to stand on (a "spot"), and walks
+// from spot to spot. Positions are a knight's top-left corner.
+const CELL = 32, OFFSET = 12, KNIGHT = 40
+export function wayFinder(s) {
+  const rows = s.walls.length, cols = s.walls[0].length
+  const wall = (c, r) => c < 0 || r < 0 || c >= cols || r >= rows || s.walls[r][c] === '#'
+  const fits = (c, r) =>
+    !wall(c, r) && !wall(c + 1, r) && !wall(c, r + 1) && !wall(c + 1, r + 1) &&
+    c * CELL + OFFSET + KNIGHT <= 800 && r * CELL + OFFSET + KNIGHT <= 600
+  const position = ({c, r}) => [c * CELL + OFFSET, r * CELL + OFFSET]
+  const spotOf = ([x, y]) => {
+    const c0 = Math.round((x - OFFSET) / CELL), r0 = Math.round((y - OFFSET) / CELL)
+    let best = null
+    for (let r = r0 - 1; r <= r0 + 1; r++)
+      for (let c = c0 - 1; c <= c0 + 1; c++) {
+        const d = Math.hypot(c * CELL + OFFSET - x, r * CELL + OFFSET - y)
+        if (fits(c, r) && (!best || d < best.d)) best = {c, r, d}
+      }
+    return best
+  }
+  return {
+    // The next place to head for on the way from `from` to `to`, staying off spots where
+    // keepOut([x, y]) is true (straight at `to` once it's close, or if there is no way round)
+    next(from, to, keepOut = () => false) {
+      const a = spotOf(from), b = spotOf(to)
+      if (!a || !b || (a.c === b.c && a.r === b.r)) return to
+      const key = ({c, r}) => r * cols + c
+      const steps = new Map([[key(b), 0]])
+      const queue = [b]
+      while (queue.length) {
+        const here = queue.shift()
+        for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const n = {c: here.c + dc, r: here.r + dr}
+          if (fits(n.c, n.r) && !steps.has(key(n)) && (key(n) === key(a) || !keepOut(position(n)))) {
+            steps.set(key(n), steps.get(key(here)) + 1)
+            queue.push(n)
+          }
+        }
+      }
+      const left = steps.get(key(a))
+      if (left === undefined) return to
+      for (const [dc, dr] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const n = {c: a.c + dc, r: a.r + dr}
+        if (steps.get(key(n)) === left - 1) return position(n)
+      }
+      return to
+    },
+    // Is a knight with its top-left corner here inside a wall?
+    inWall: ([x, y]) => {
+      for (let r = Math.floor(y / CELL); r <= Math.ceil((y + KNIGHT) / CELL) - 1; r++)
+        for (let c = Math.floor(x / CELL); c <= Math.ceil((x + KNIGHT) / CELL) - 1; c++) if (wall(c, r)) return true
+      return false
+    },
+  }
+}
+
+// Does a knight with its top-left corner at [x, y] come within `margin` px of a door?
+export const nearDoor = (s, [x, y], margin = 0) =>
+  s.doors.some(([dx, dy, dw, dh]) => x < dx + dw + margin && dx - margin < x + KNIGHT && y < dy + dh + margin && dy - margin < y + KNIGHT)

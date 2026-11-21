@@ -7,6 +7,8 @@ Nostr relays and WebRTC, the same way people play on the website. They check tha
 - the game carries on (same world, same score) when the host leaves, hides its tab or freezes,
   and a host that comes back steps down instead of bringing back an old copy of the world,
 - coins, red knights, shooting, game over and respawning all work for a guest, over the network,
+- collecting a level's coins opens its door, and walking through it takes the whole team to the
+  next level (everybody starting on the new map's floor, not on top of each other),
 - touch controls work (drag your knight, tap to shoot),
 - the landing page loads cleanly and private-room invite links work.
 

@@ -12,11 +12,11 @@
 #include <string>
 #include <vector>
 
-const int W = 800, H = 600; // size of the playing field in pixels
+#include "level.h" // the field, its walls and doors
 
-const float PLAYER_SIZE = 40.0f;
+const float PLAYER_SIZE = KNIGHT_SIZE;
 const float PLAYER_SPEED = 250.0f; // pixels per second
-const float ENEMY_SIZE = 40.0f;
+const float ENEMY_SIZE = KNIGHT_SIZE;
 const float ENEMY_SPEED = 80.0f;
 const float COIN_SIZE = 15.0f;
 const float BULLET_SIZE = 8.0f;
@@ -29,16 +29,6 @@ const int MAX_BULLETS = 256;
 const float DEAD = -1000.0f;      // a player whose x is below 0 is dead (or not spawned yet)
 const float TICK = 1.0f / 60.0f;  // the world runs 60 times a second
 
-struct Rect
-{
-    float x, y, w, h;
-};
-
-inline bool checkCollision(const Rect &a, const Rect &b)
-{
-    return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-}
-
 struct PlayerState
 {
     int id;
@@ -50,11 +40,6 @@ struct BulletState
     float x, y, vx, vy;
 };
 
-struct Point
-{
-    float x, y;
-};
-
 // Everything a client needs to draw a frame, and everything a new host needs to take over.
 struct Snapshot
 {
@@ -62,6 +47,9 @@ struct Snapshot
     int generation = 0; // how many times the world has changed hosts; the newest host wins
     int hostId = 0;     // player id of the host (0 = dedicated server)
     int score = 0;
+    int level = 1;      // the level number: 1, 2, 3, ... (it keeps counting when the maps come round again)
+    int map = 0;        // which map that level is played on (an index into builtInLevels().levels)
+    int coinsLeft = 0;  // coins still to collect before the doors open (0: they're open)
     std::vector<PlayerState> players;
     std::vector<Point> coins;
     std::vector<Point> enemies;
@@ -69,7 +57,8 @@ struct Snapshot
 };
 
 // The whole world as one line of text, like the original server sent:
-// "W <epoch> <generation> <hostId> <score> <n> id x y ... <n> x y ... <n> x y ... <n> x y vx vy ..."
+// "W <epoch> <generation> <hostId> <score> <level> <map> <coinsLeft>
+//    <n> id x y ... <n> x y ... <n> x y ... <n> x y vx vy ..."
 std::string encodeSnapshot(const Snapshot &s);
 // Reads a line made by encodeSnapshot. Returns false (and leaves `out` alone) on bad input.
 bool decodeSnapshot(const std::string &line, Snapshot &out);
@@ -77,7 +66,8 @@ bool decodeSnapshot(const std::string &line, Snapshot &out);
 class World
 {
 public:
-    explicit World(double epoch, unsigned seed = std::random_device{}());
+    // The game always plays builtInLevels(); tests can bring levels of their own.
+    explicit World(double epoch, unsigned seed = std::random_device{}(), const LevelSet *levels = nullptr);
 
     // Continue a world that another host was running (used when the host leaves).
     void seed(const Snapshot &s);
@@ -92,6 +82,7 @@ public:
     void step(float dt); // move everything forward by dt seconds
     Snapshot snapshot(int hostId) const;
     double epoch() const { return epoch_; }
+    const Level &level() const { return levels_->levels[(size_t)mapIndex]; } // the map being played
 
 private:
     struct Player
@@ -105,12 +96,18 @@ private:
         float vx, vy;
     };
 
+    void startLevel(int number, int map); // a fresh level: new coins, no red knights yet
+    void moveEnemies(float dt);
+    bool anyoneAlive() const;
     Point randomCoinSpot();
     Point randomEnemySpot();
 
     double epoch_;
     std::mt19937 rng;
+    const LevelSet *levels_;
     int score = 0;
+    int levelNumber = 1, mapIndex = 0, coinsLeft = 0;
+    bool started = false; // has anybody played this level yet (are its first red knights out)?
     std::vector<Player> players;
     std::vector<Rect> coins, enemies;
     std::vector<Bullet> bullets;
