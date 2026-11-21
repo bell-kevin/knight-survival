@@ -1,6 +1,7 @@
 // A bot plays as a guest, so every action crosses the network to the host: it collects coins
 // until red knights appear, shoots them, opens the door and takes everybody through it to level
-// 2, gets caught and respawns. Then a phone tries the touch controls.
+// 2 (where scouts wait), runs into the bad guys until its health is gone, and respawns. Then a
+// phone tries the touch controls.
 // Usage: node gameplay.mjs [site-url] [screenshot-folder]
 //
 // Copyright (C) 2026 Kevin Bell. SPDX-License-Identifier: GPL-3.0-or-later
@@ -30,8 +31,11 @@ async function steer(p, dx, dy) {
   for (const key of want) if (!held.has(key)) { await p.page.keyboard.down(key); held.add(key) }
 }
 
+// The middle of a bad guy in a state: [x, y, kind, health, size]
+const middle = ([x, y, , , size]) => [x + size / 2, y + size / 2]
+
 // The bot plays like a person: walk to the nearest coin (finding the way round the walls, and
-// keeping off the open door), dodge red knights that get close, shoot the ones in range (if
+// keeping off the open door), dodge bad guys that get close, shoot the ones in range (if
 // allowed), and press a key to respawn when caught.
 let biggestJump = 0
 async function play(p, done, {shoot = true, timeout = 60000, onShot} = {}) {
@@ -51,7 +55,7 @@ async function play(p, done, {shoot = true, timeout = 60000, onShot} = {}) {
     }
     const [mx, my] = [s.me[0] + 20, s.me[1] + 20]
     const dist = ([x, y]) => Math.hypot(x - mx, y - my)
-    const enemy = s.enemies.map(([x, y]) => [x + 20, y + 20]).sort((a, b) => dist(a) - dist(b))[0]
+    const enemy = s.enemies.map(middle).sort((a, b) => dist(a) - dist(b))[0]
     if (shoot && enemy && dist(enemy) < 300 && Date.now() - lastShot > 220) {
       const [px, py] = await toPage(p, enemy[0], enemy[1])
       await p.page.mouse.click(px, py)
@@ -130,19 +134,29 @@ check(await waitFor('knights moved to the new map', async () => {
 const alive = (await states([A, B, C])).filter(x => x.me[0] >= 0).map(x => x.me)
 check(alive.every((p, i) => alive.every((q, j) => i === j || Math.hypot(p[0] - q[0], p[1] - q[1]) >= 40)),
   `nobody starts level 2 on top of somebody else (${alive.map(p => `[${p}]`).join(' ')})`)
+s = await state(B)
+check(s.enemies.some(([, , kind, health, size]) => kind === 1 && health === 1 && size === 32),
+  `level 2 starts with scouts, and the guest knows what they are (${JSON.stringify(s.enemies)})`)
 await sleep(800)
 await screenshot(B.page.locator('#canvas'), 'gameplay-level-2')
 
-// Walk into a red knight on purpose: game over, then any key brings us back
+// Walk into the bad guys on purpose: each touch takes some health, and when it's gone it's game
+// over; then any key brings us back with all of it
 await play(B, x => x.enemies.length > 0, {shoot: false})
-s = await walkTo(B, x => x.enemies[0] || x.me, x => x.me[0] < 0, 30000)
+const healthSeen = new Set()
+s = await walkTo(B, x => (x.enemies[0] ? middle(x.enemies[0]).map(v => v - 20) : x.me), x => {
+  healthSeen.add(x.health)
+  return x.me[0] < 0
+}, 60000)
 const caught = s.me[0] < 0
-check(caught, 'touching a red knight ends your run')
+check([...healthSeen].some(h => h > 0 && h < 100), `a touch takes some of your health, not all of it (${[...healthSeen].join(', ')})`)
+check(caught && s.health === 0, 'when your health runs out, your run ends')
 await sleep(400)
 await screenshot(B.page.locator('#canvas'), 'gameplay-game-over')
 await sleep(600)
 await B.page.keyboard.press('Space')
-check(await waitFor('respawned', async () => (await state(B)).me[0] >= 0, 3000), 'any key respawns you')
+check(await waitFor('respawned', async () => (await state(B)).me[0] >= 0 && (await state(B)).health === 100, 3000),
+  'any key respawns you, with all your health')
 
 // A phone joins the busy room, then tries the touch controls in a quiet room of its own
 const phone = await openPlayer(browser, 'phone', room, phoneSize)

@@ -12,12 +12,11 @@
 #include <string>
 #include <vector>
 
-#include "level.h" // the field, its walls and doors
+#include "level.h" // the field, its walls and doors, and the kinds of bad guys
 
 const float PLAYER_SIZE = KNIGHT_SIZE;
 const float PLAYER_SPEED = 250.0f; // pixels per second
-const float ENEMY_SIZE = KNIGHT_SIZE;
-const float ENEMY_SPEED = 80.0f;
+const float HURT_TIME = 0.15f;     // seconds a bad guy flashes after a bullet hits it
 const float COIN_SIZE = 15.0f;
 const float BULLET_SIZE = 8.0f;
 const float BULLET_SPEED = 600.0f;
@@ -40,6 +39,14 @@ struct BulletState
     float x, y, vx, vy;
 };
 
+struct EnemyState
+{
+    float x, y;            // top-left corner (its size depends on its kind)
+    int kind = RED_KNIGHT; // see enemies.h
+    int health = 0;        // hits it can still take (0 when seeding a world: all of its kind's)
+    bool hurt = false;     // a bullet just hit it
+};
+
 // Everything a client needs to draw a frame, and everything a new host needs to take over.
 struct Snapshot
 {
@@ -52,13 +59,13 @@ struct Snapshot
     int coinsLeft = 0;  // coins still to collect before the doors open (0: they're open)
     std::vector<PlayerState> players;
     std::vector<Point> coins;
-    std::vector<Point> enemies;
+    std::vector<EnemyState> enemies;
     std::vector<BulletState> bullets;
 };
 
 // The whole world as one line of text, like the original server sent:
 // "W <epoch> <generation> <hostId> <score> <level> <map> <coinsLeft>
-//    <n> id x y ... <n> x y ... <n> x y ... <n> x y vx vy ..."
+//    <n> id x y ... <n> x y ... <n> x y kind health hurt ... <n> x y vx vy ..."
 std::string encodeSnapshot(const Snapshot &s);
 // Reads a line made by encodeSnapshot. Returns false (and leaves `out` alone) on bad input.
 bool decodeSnapshot(const std::string &line, Snapshot &out);
@@ -95,20 +102,29 @@ private:
         Rect rect;
         float vx, vy;
     };
+    struct Enemy
+    {
+        Rect rect;
+        int kind;
+        int health; // hits it can still take
+        float hurt; // seconds it still flashes for
+    };
 
-    void startLevel(int number, int map); // a fresh level: new coins, no red knights yet
+    void startLevel(int number, int map); // a fresh level: new coins, no bad guys yet
+    void addEnemy(int kind, Point middle);
     void moveEnemies(float dt);
     bool anyoneAlive() const;
     Point randomCoinSpot();
-    Point randomEnemySpot();
+    EnemySpot randomEnemySpot();
 
     double epoch_;
     std::mt19937 rng;
     const LevelSet *levels_;
     int score = 0;
     int levelNumber = 1, mapIndex = 0, coinsLeft = 0;
-    bool started = false; // has anybody played this level yet (are its first red knights out)?
+    bool started = false; // has anybody played this level yet (are its first bad guys out)?
     std::vector<Player> players;
-    std::vector<Rect> coins, enemies;
+    std::vector<Rect> coins;
+    std::vector<Enemy> enemies;
     std::vector<Bullet> bullets;
 };

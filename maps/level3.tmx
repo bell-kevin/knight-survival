@@ -76,10 +76,10 @@
   </object>
  </objectgroup>
  <objectgroup id="5" name="enemies">
-  <object id="7" name="knight" x="304" y="48">
+  <object id="7" name="knight" type="scout" x="304" y="48">
    <point/>
   </object>
-  <object id="8" name="knight" x="192" y="144">
+  <object id="8" name="knight" type="champion" x="192" y="144">
    <point/>
   </object>
   <object id="9" name="knight" x="304" y="256">

@@ -488,6 +488,35 @@ bool readLayerData(const XmlNode &layer, int cells, std::vector<unsigned> &out, 
     return true;
 }
 
+// "red, scout, champion, brute and warlord"
+std::string enemyKindList()
+{
+    std::string list;
+    for (int kind = 0; kind < ENEMY_KINDS; kind++)
+        list += std::string(kind == 0 ? "" : kind + 1 == ENEMY_KINDS ? " and " : ", ") + ENEMY_TYPES[kind].name;
+    return list;
+}
+
+// Which kind of bad guy an object is: its class (Tiled saves that as "type", except Tiled 1.9,
+// which saved it as "class"), or else a "kind" property, or else its name. A red knight unless
+// it says otherwise.
+int enemyKindOf(const XmlNode &object, Level &level)
+{
+    auto properties = object.properties();
+    for (const std::string &word : {object.attr("type"), object.attr("class"), properties["kind"]})
+    {
+        if (word.empty())
+            continue;
+        int kind = enemyKindNamed(word);
+        if (kind >= 0)
+            return kind;
+        level.warnings.push_back("there is no bad guy called \"" + word + "\" (only " + enemyKindList() + "), so it's a red knight");
+        return RED_KNIGHT;
+    }
+    int kind = enemyKindNamed(object.attr("name")); // names can be anything: no warning for "guard 1"
+    return kind >= 0 ? kind : RED_KNIGHT;
+}
+
 void readObjects(const XmlNode &group, float scale, Level &level)
 {
     std::string kind = lower(group.attr("name"));
@@ -512,12 +541,11 @@ void readObjects(const XmlNode &group, float scale, Level &level)
             if (name == "player" || name.empty())
                 level.playerSpawns.push_back(middle);
             else if (name == "enemy")
-                level.enemySpawns.push_back(middle);
+                level.enemySpawns.push_back({middle.x, middle.y, enemyKindOf(object, level)});
         }
         else if (kind == "enemies")
         {
-            level.enemyStarts.push_back(middle);
-            level.enemySpawns.push_back(middle);
+            level.enemyStarts.push_back({middle.x, middle.y, enemyKindOf(object, level)});
         }
     }
 }
@@ -628,6 +656,28 @@ bool readMap(const std::string &fileName, const XmlNode &map, const std::vector<
     return true;
 }
 } // namespace
+
+// ---- Bad guys -------------------------------------------------------------------------------
+
+int enemyKindNamed(const std::string &word)
+{
+    std::string name; // just the letters, in lowercase: "Red Knight" -> "redknight"
+    for (char c : word)
+    {
+        if (std::isalpha((unsigned char)c))
+            name += (char)std::tolower((unsigned char)c);
+    }
+    if (name == "knight" || name == "redknight")
+        return RED_KNIGHT;
+    if (name == "boss")
+        return WARLORD;
+    for (int kind = 0; kind < ENEMY_KINDS; kind++)
+    {
+        if (name == ENEMY_TYPES[kind].name)
+            return kind;
+    }
+    return -1;
+}
 
 // ---- Walls ----------------------------------------------------------------------------------
 
@@ -876,9 +926,15 @@ LevelSet loadLevels(const std::vector<MapFile> &files)
         Level level;
         std::string problem;
         if (loadLevel(file->name, files, level, problem))
+        {
+            for (const std::string &warning : level.warnings)
+                set.problems.push_back(file->name + ": " + warning);
             set.levels.push_back(std::move(level));
+        }
         else
+        {
             set.problems.push_back(file->name + ": " + problem);
+        }
     }
     if (set.levels.empty())
         set.levels.push_back(openField());

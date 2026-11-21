@@ -196,6 +196,13 @@ public:
                 out += (out.size() > 1 ? ",[" : "[") + std::to_string((int)p.x) + "," + std::to_string((int)p.y) + "]";
             return out + "]";
         };
+        std::string enemies = "["; // [x, y, kind, health, size] each
+        for (auto &e : snap.enemies)
+        {
+            enemies += (enemies.size() > 1 ? ",[" : "[") + std::to_string((int)e.x) + "," + std::to_string((int)e.y) + "," +
+                       std::to_string(e.kind) + "," + std::to_string(e.health) + "," + std::to_string((int)enemyType(e.kind).size) + "]";
+        }
+        enemies += "]";
         int alive = (int)std::count_if(snap.players.begin(), snap.players.end(), [](const PlayerState &p) { return p.x >= 0; });
         char head[512];
         std::snprintf(head, sizeof(head),
@@ -223,7 +230,7 @@ public:
             doors += std::to_string((int)d.area.x) + "," + std::to_string((int)d.area.y) + "," + std::to_string((int)d.area.w) +
                      "," + std::to_string((int)d.area.h) + "]";
         }
-        return std::string(head) + "\"coins\":" + points(snap.coins) + ",\"enemies\":" + points(snap.enemies) +
+        return std::string(head) + "\"coins\":" + points(snap.coins) + ",\"enemies\":" + enemies +
                ",\"walls\":" + walls + "],\"doors\":" + doors + "]}";
     }
 

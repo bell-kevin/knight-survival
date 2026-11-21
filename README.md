@@ -7,29 +7,48 @@ friends: no sign-up, no download, no game server.
 
 ![Three knights on the first level, The Mossy Cellar: a bullet flies at a red knight, and the open door glows on the right](screenshotsGIFS/web-multiplayer.png)
 
-Collect the yellow coins, shoot the red knights, and stay alive. Every coin is a point for the
-whole team, every 5 points another red knight shows up, and shooting one is worth 10. Collect
-enough coins and the level's door opens: walk through it and the whole team goes on to the next
-level. Touch a red knight and you're out until you jump back in. If everybody is out, the world
+Collect the gold coins, shoot the bad knights, and stay alive. Every coin is a point for the
+whole team, and every 5 coins another bad guy shows up. Collect enough coins and the level's
+door opens: walk through it and the whole team goes on to the next level. Every touch from a bad
+guy takes some of your health, and when it's gone you're out until you jump back in. You get all
+your health back when you do, and at the start of every level. If everybody is out, the world
 starts over at level 1.
 
-There are four levels, and after the last one the first comes round again with more red knights.
+There are eight levels, and after the last one the first comes round again with more bad guys.
 They are maps made with the free [Tiled](https://www.mapeditor.org/) editor, and you can
 [make your own](maps/README.md).
+
+## The bad guys
+
+| Bad guy | What it's like | Shots to beat it | A touch takes | Points |
+| ------- | -------------- | :--------------: | :-----------: | -----: |
+| Red knight | The original | 1 | 30 health | 10 |
+| Green scout | Small and quick | 1 | 15 health | 15 |
+| Purple champion | A little quicker than a red knight | 3 | 40 health | 30 |
+| Bronze brute | Big and slow | 8 | 60 health | 60 |
+| The warlord | Huge, crowned, and waiting in the last hall | 25 | all of it | 250 |
+
+You have 100 health. A bad guy that touches you pushes you back, and you blink for a moment
+while nothing can hurt you again. The ones that take more than one shot carry a health bar, and
+flash when a bullet hits them. They are all the red knight, recolored by the game, and how strong
+each kind is lives in [`src/enemies.h`](src/enemies.h).
+
+![The last level, The Warlord's Hall: the crowned warlord on the carpet before the door, two purple champions, a bronze brute, a green scout and a red knight, and three knights shooting at them](screenshotsGIFS/warlords-hall.png)
 
 ## How to play
 
 |         | Keyboard and mouse        | Phone or tablet                  |
 | ------- | ------------------------- | -------------------------------- |
 | Move    | `WASD` or the arrow keys  | Left thumb stick (or drag your knight) |
-| Shoot   | Left click (aims at the pointer) | Right thumb stick: push it to aim and keep firing, tap it to hit the nearest red knight (or tap the field) |
+| Shoot   | Left click (aims at the pointer) | Right thumb stick: push it to aim and keep firing, tap it to hit the nearest bad guy (or tap the field) |
 | Respawn | Any key                   | Tap                              |
 
 **On a phone or tablet** the game gets the whole screen, with a thumb stick on each side; hold
 it sideways for the biggest view. The menu button has the invite link and the way back to the
-lobby. On Android, pressing Play goes full screen. On iPhone, which doesn't let web pages do
-that, add the game to your home screen (Share, then Add to Home Screen) to play without the
-browser's bars.
+lobby. On Android, pressing Play goes full screen. iPhones don't let web pages go full screen,
+in any browser, so there the game asks you to swipe up when you hold the phone sideways: the
+browser's bars slide out of the way. For a full-screen game every time, open it in Safari and add
+it to your home screen (Share, then Add to Home Screen).
 
 **Playing together:** press **Play now** to join the public lobby, or **Create private room** and
 send the invite link to your friends. Up to 8 knights can play in a room. Nobody needs an
@@ -94,7 +113,8 @@ Run the tests with `ctest --test-dir build`. Every push to `main` is built and t
 | Path | What it is |
 | ---- | ---------- |
 | [`src/main.cpp`](src/main.cpp) | The game: input, movement, drawing |
-| [`src/world.cpp`](src/world.cpp) | The rules: coins, red knights, bullets, score, doors and levels |
+| [`src/world.cpp`](src/world.cpp) | The rules: coins, bad guys, bullets, score, doors and levels |
+| [`src/enemies.h`](src/enemies.h) | The kinds of bad guys: how big, fast, tough and strong each one is |
 | [`src/level.cpp`](src/level.cpp) | Reads the level maps, and finds the way around their walls |
 | [`maps/`](maps/) | The levels, made with Tiled ([how to make one](maps/README.md)) |
 | [`src/session_web.cpp`](src/session_web.cpp) | Online play in the browser: hosting, joining, host hand-over |

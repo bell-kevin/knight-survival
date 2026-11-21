@@ -12,9 +12,9 @@
 import {joinRoom} from './vendor/trystero.js'
 
 // Every room name is namespaced by this, so other apps using the same relays never mix with us.
-// The number at the end goes up whenever the game's messages change (2: levels), so a browser
-// still running an older copy of the page never ends up in a room with the new one.
-const APP_ID = 'github.com/bell-kevin/knight-survival/2'
+// The number at the end goes up whenever the game's messages change (2: levels, 3: kinds of bad
+// guys), so a browser still running an older copy of the page never ends up in a room with the new one.
+const APP_ID = 'github.com/bell-kevin/knight-survival/3'
 
 // Public Nostr relays that introduce players to each other (everyone must use the same ones).
 // Picked from Trystero's own default list, keeping well-established relays that were answering
