@@ -33,9 +33,11 @@ export async function screenshot(target, name) {
   if (SHOTS) await target.screenshot({path: `${SHOTS}/${name}.png`})
 }
 
-// Opens the game in a fresh browser profile and presses Play.
-export async function openPlayer(browser, name, room, contextOptions = {}) {
+// Opens the game in a fresh browser profile and presses Play. `before` are functions to run in
+// the page before any of its own scripts (Playwright's addInitScript).
+export async function openPlayer(browser, name, room, contextOptions = {}, before = []) {
   const context = await browser.newContext({viewport: {width: 1000, height: 860}, ...contextOptions})
+  for (const script of before) await context.addInitScript(script)
   const page = await context.newPage()
   page.on('console', m => ['error', 'warning'].includes(m.type()) && log(`[${name}] ${m.type()}: ${m.text()}`))
   page.on('pageerror', e => log(`[${name}] PAGE ERROR: ${e.message}`))

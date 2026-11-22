@@ -16,6 +16,12 @@
 //   * Within the same world the newest generation wins, so a host that comes back from a hidden
 //     tab sees that the game moved on without it and simply joins as a guest.
 //
+// Can't get through? Sometimes the relays introduce us to another player, but our two networks
+// won't let the browsers connect to each other (some guest Wi-Fi and mobile networks don't, and
+// there is no relay server to fall back on). Instead of just "waiting for players", we say so,
+// and suggest another network. The connection keeps being retried, so a player who switches
+// networks joins as soon as a way through opens up.
+//
 // Messages are text, like the original protocol:
 //   guest -> host:  "x y" (my position), "B x y vx vy" (I fired), "H <epoch> <id>" (hello)
 //   host -> guest:  "ID n" (your player id), "FULL" (no room for you), "W ..." (the world)
@@ -56,6 +62,9 @@ const double SEARCH_TIMEOUT_MS = 2500;   // no new host showed up for this long:
 const double RECLAIM_TIMEOUT_MS = 6000;  // players carried over to a new host must check in by then
 const double AWAY_MS = 2000;             // a guest silent this long is away: take their knight out
 const double GONE_MS = 60000;            // ...and this long: free their place in the world
+// A player we couldn't connect to is retried at least once a minute, and each failed try is
+// reported again; without any news for this long, they must have gone.
+const double UNREACHABLE_MS = 150000;
 
 double nowMs() { return emscripten_get_now(); }
 
@@ -101,6 +110,7 @@ public:
     {
         pumpEvents();
         double now = nowMs();
+        std::erase_if(unreachable, [now](const auto &u) { return now - u.second > UNREACHABLE_MS; });
         if (hosting())
         {
             accumulator += std::min(dt, 0.25f);
@@ -183,7 +193,13 @@ public:
         if (full)
             return lines + "ROOM FULL - WATCHING";
         if (snap.players.size() <= 1)
-            return lines + "WAITING FOR PLAYERS";
+        {
+            if (unreachable.empty())
+                return lines + "WAITING FOR PLAYERS";
+            // Somebody is there, but our two networks won't let us connect: one of us should switch
+            std::string who = unreachable.size() == 1 ? "A PLAYER" : std::to_string(unreachable.size()) + " PLAYERS";
+            return lines + "CAN'T CONNECT TO " + who + "\nTRY MOBILE DATA OR OTHER WI-FI";
+        }
         return lines + std::to_string(snap.players.size()) + " PLAYERS";
     }
 
@@ -208,11 +224,16 @@ public:
         std::snprintf(head, sizeof(head),
                       "{\"role\":\"%s\",\"myId\":%d,\"epoch\":%.0f,\"gen\":%d,\"hostId\":%d,\"hostPeer\":\"%s\","
                       "\"peers\":%d,\"players\":%d,\"alive\":%d,\"score\":%d,\"bullets\":%d,\"shots\":%d,\"full\":%s,"
-                      "\"me\":[%d,%d],\"level\":%d,\"map\":%d,\"coinsLeft\":%d,",
+                      "\"me\":[%d,%d],\"level\":%d,\"map\":%d,\"coinsLeft\":%d,\"unreachable\":%d,",
                       hosting() ? "host" : (hostPeer.empty() ? "searching" : "guest"), myPid, snap.epoch,
                       snap.generation, snap.hostId, hostPeer.c_str(), (int)peers.size(), (int)snap.players.size(),
                       alive, snap.score, (int)snap.bullets.size(), shots, full ? "true" : "false", (int)myX, (int)myY,
-                      snap.level, snap.map, snap.coinsLeft);
+                      snap.level, snap.map, snap.coinsLeft, (int)unreachable.size());
+
+        // What the top right corner says (room names and the messages need no escaping but "\n")
+        std::string said;
+        for (char c : status())
+            said += c == '\n' ? std::string("\\n") : std::string(1, c);
 
         // The map, so a test can find its way: one string per row, '#' for wall, '.' for floor
         const Level &level = builtInLevel(snap.map);
@@ -230,7 +251,7 @@ public:
             doors += std::to_string((int)d.area.x) + "," + std::to_string((int)d.area.y) + "," + std::to_string((int)d.area.w) +
                      "," + std::to_string((int)d.area.h) + "]";
         }
-        return std::string(head) + "\"coins\":" + points(snap.coins) + ",\"enemies\":" + enemies +
+        return std::string(head) + "\"status\":\"" + said + "\",\"coins\":" + points(snap.coins) + ",\"enemies\":" + enemies +
                ",\"walls\":" + walls + "],\"doors\":" + doors + "]}";
     }
 
@@ -249,19 +270,27 @@ private:
             if (peer.empty())
                 continue;
             if (event[0] == 'J')
-                peers.insert(peer);
+                connected(peer);
             else if (event[0] == 'L')
                 peerLeft(peer);
             else if (event[0] == 'M' && space != std::string::npos)
                 handleMessage(peer, event.substr(space + 1));
+            else if (event[0] == 'F' && !peers.count(peer))
+                unreachable[peer] = nowMs(); // found them, but couldn't connect (reported on every try)
         }
+    }
+
+    void connected(const std::string &peer)
+    {
+        peers.insert(peer);
+        unreachable.erase(peer); // a way through at last
     }
 
     void handleMessage(const std::string &peer, const std::string &msg)
     {
         if (msg.empty())
             return;
-        peers.insert(peer); // a message can beat the "connected" event
+        connected(peer); // a message can beat the "connected" event
         if (msg[0] == 'W')
         {
             Snapshot s;
@@ -526,6 +555,9 @@ private:
     float myX = DEAD, myY = DEAD;
     float sendTimer = 0;
     int shots = 0; // how many times we fired (for the tests)
+
+    // Players the relays found us but we couldn't connect to: peer -> when that was last reported
+    std::map<std::string, double> unreachable;
 
     // While hosting
     std::unique_ptr<World> world_;

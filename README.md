@@ -54,13 +54,20 @@ it to your home screen (Share, then Add to Home Screen).
 send the invite link to your friends. Up to 8 knights can play in a room. Nobody needs an
 account, and nothing is installed.
 
+If the top right corner says **CAN'T CONNECT TO A PLAYER**, the game found them, but your two
+networks won't let your browsers connect to each other (some guest Wi-Fi and mobile networks
+don't). Switch one of you between Wi-Fi and mobile data: the game keeps trying, and puts you
+together as soon as it gets through.
+
 ## How it works
 
 GitHub Pages can only host files, so there is no game server. Instead:
 
 1. The C++ game is compiled to WebAssembly with [Emscripten](https://emscripten.org/).
 2. Browsers in the same room find each other through public [Nostr](https://nostr.com/) relays
-   (an open, decentralized protocol), then connect directly to each other with WebRTC.
+   (an open, decentralized protocol), then connect directly to each other with WebRTC. No
+   server relays the game itself, so when two players' networks won't allow a direct
+   connection, the game tells them so and suggests switching networks.
 3. One player's browser, the **host**, runs the same world simulation as the native server
    ([`src/world.cpp`](src/world.cpp)). Everyone else sends the host their position and shots,
    and the host sends the whole world back 30 times a second, using the same text protocol as

@@ -18,6 +18,9 @@ Nostr relays and WebRTC, the same way people play on the website. They check tha
 - on an iPhone, where no browser can go full screen, the page asks for a swipe up while the
   browser's bars are showing, the swipe scrolls the page and not the game, and the request goes
   away (and comes back) with the bars,
+- when one player's network lets nothing through, both players are told they can't connect, with
+  a tip to try another network, and once it lets them through they end up in one world and the
+  tip goes away (and a player that's gone is forgotten after 2.5 minutes),
 - the landing page loads cleanly and private-room invite links work.
 
 They need Node.js and an internet connection (the relays are public servers on the internet).
