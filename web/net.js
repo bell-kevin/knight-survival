@@ -46,7 +46,7 @@ let channel = null
 let selfPeerId = ''
 
 // Past MAX_QUEUE, the oldest message is dropped (the game only needs the latest world anyway),
-// but never a "connected"/"disconnected" event.
+// but never any other event.
 const push = event => {
   if (queue.length >= MAX_QUEUE) {
     const oldest = queue.findIndex(e => e[0] === 'M')
@@ -74,7 +74,11 @@ function connect(roomName) {
   })
   room.onPeerJoin(({peerId}) => push(`J ${peerId}`))
   room.onPeerLeave(({peerId}) => push(`L ${peerId}`))
-  room.onError(err => console.warn('[net]', err.code, err.message))
+  room.onError(err => {
+    console.warn('[net]', err.code, err.message)
+    // The relays found us a peer, but our networks won't let us connect (Trystero tries again)
+    if (err.code === 'peer-connect-failed' && err.peerId) push(`F ${err.peerId}`)
+  })
   room.getSelf().then(self => (selfPeerId = self.peerId), () => {})
 }
 
@@ -86,6 +90,7 @@ function connect(roomName) {
 //   "J <peer>"            a peer connected
 //   "L <peer>"            a peer disconnected
 //   "M <peer> <message>"  a peer sent us a message
+//   "F <peer>"            found a peer, but couldn't connect to it (reported again on each retry)
 window.KnightNet = {
   join(name) {
     if (!room) connect(name)
